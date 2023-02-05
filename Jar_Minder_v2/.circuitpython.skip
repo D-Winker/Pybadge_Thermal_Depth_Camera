@@ -1,1 +1,0 @@
-Jar_Minder_v2/code.py 105: Consider using a generator instead 'tuple(int(x.strip()) for x in a)' (consider-using-generator)

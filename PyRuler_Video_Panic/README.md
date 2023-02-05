@@ -1,3 +1,0 @@
-# PyRuler Video Conference Panic Buttons
-
-To be replaced with a link to the guide once published...

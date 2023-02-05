@@ -1,8 +1,0 @@
-{
-    "jobs": ["shark.json","adafruit.json"]
-    "asgfolder": "/asgfiles"
-    "jobfolder": "/jobs"
-    "bkfolder": "/backgrounds"
-    "imagefolder": "/images"
-    "slidefolder": "/asgfiles"
-}

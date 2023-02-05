@@ -1,22 +1,9 @@
-[![Build Status](https://travis-ci.com/adafruit/Adafruit_Learning_System_Guides.svg?branch=main)](https://travis-ci.com/adafruit/Adafruit_Learning_System_Guides)
-# Introduction
+## MLX9064- Thermal Image Recording Guide Code
 
-This is a collection of smaller programs and scripts to display "inline" in
-[Adafruit Learning System][learn] guides.  Subdirectories here will generally
-contain a README with a link to their corresponding guide.
+See https://learn.adafruit.com/mlx90640-thermal-image-recording/ for this guide
 
-## Testing
+The files consist of an Arduino sketch for an Adafruit Pybadge moard with attached MLX90640 thermal image sensor.
 
-The code here is partially checked by GitHub Actions against Pylint (for
-CircuitPython code) or the Arduino compilation process.
+The Processing directory contains post processing for images.
 
-Code in directories containing a file called `.circuitpython.skip` will be
-skipped by Pylint checks.
-
-Code in directories containing a `.[platformname].test` file, such as
-`.uno.test` will be compiled against the corresponding platform.
-
-This is a work in progress.
-
-[learn]: https://learn.adafruit.com/
-
+Guide by Eduardo Blume for Adafruit Industries. MIT License
