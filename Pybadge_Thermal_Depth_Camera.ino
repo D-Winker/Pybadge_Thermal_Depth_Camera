@@ -1,3 +1,4 @@
+// TODO: Clean up this header
 // The VL53L5CX has a 45x45 degree FoV (65 degree diagonal FoV)
 // Regarding FoV: AN5894, Description of the fields of view of STMicroelectronics' Time-of-Flight sensors
 // The MLX90640 has a 55x35 degree FoV
@@ -37,9 +38,19 @@ Adafruit_Arcada arcada;
 #include <Wire.h>
 #include <SparkFun_VL53L5CX_Library.h> // http://librarymanager/All#SparkFun_VL53L5CX
 
+// The below constant is set in "platform.h"
+const uint8_t targetsPerZone = VL53L5CX_NB_TARGET_PER_ZONE;
+// The sensor can return up to 4 distances per pixel; i.e. detect 4 targets per zone.
+// The targets must be at least 600mm apart. 
+// It looks like setting targets per zone to 4 doesn't work; 3 does!
+// Code size when setting (1, 2, 3, 4) targets is (162400, 164416, 164368, 162560) bytes
+// ...looks like a problem with 4.
+// Returns are all in one array, [zone 1 return 1, zone 1 return 2, ..., zone 64 return 1, ...]
+
 SparkFun_VL53L5CX myImager;
 VL53L5CX_ResultsData vl53Data; // Result data class structure
 float vl53Nearest[64];  // At the moment, I have my VL53L5CX set to return up to 3 values per zone. For convenience, I'll pull out the nearest values per zone and store them here.
+float vl53All[64*targetsPerZone];  // Store the raw data from the VL53L5CX
 
 #if !defined(USE_TINYUSB)
   #warning "Compile with TinyUSB selected!"
@@ -60,8 +71,10 @@ uint8_t sensorMode = 0;  // 0 = thermal, 1 = depth, 2 = 'intelligent' depth, 3 =
 #define MENU_VPOS 6
 #define GRAY_33 0x528A
 #define BOTTOM_DIR "MLX90640"
+#define BOTTOM_DIR_CSV "VL53L5CX"
 #define DIR_FORMAT "/dir%05d"
 #define BMP_FORMAT "/frm%05d.bmp"
+#define CSV_FORMAT "/frm%05d.csv"
 #define CFG_FLNAME "/config.ini"
 #define MAX_SERIAL 999
 
@@ -121,7 +134,7 @@ uint16_t highAddr = 0, lowAddr = 0, highAddr53 = 0, lowAddr53 = 0; // Append the
 uint16_t backColor, lowPixel, highPixel, buttonRfunc = 1,
          emissivity = 95, frameRate = 4, sharpener = 25,
          thermRange = 0, paletteNum = 1, colorPal[256],            // Array for color palettes
-         nextDirIndex = 0, nextBMPindex = 0, nextBMPsequence = 1;  // These keep count of SD files and dirs, 0==error
+         nextDirIndex = 0, nextFileIndex = 0, nextFrameSequence = 1;  // These keep count of SD files and dirs, 0==error
 uint32_t deBounce = 0, buttonBits = 0;
 boolean mirrorFlag = false, celsiusFlag = false, markersOn = true,
         screenDim = false, smoothing = false, showLastCap = false,
@@ -129,15 +142,6 @@ boolean mirrorFlag = false, celsiusFlag = false, markersOn = true,
 float battAverage = 0.0, colorLow = 0.0, colorHigh = 100.0, colorLow53 = 0.0, colorHigh53 = 100.0;        // Values for managing color range
 volatile boolean clickFlagMenu = false, clickFlagSelect = false, clickFlagUpsample = false, clickFlagSmoothstep = false, clickFlagSwitchMode = false;   // Volatiles for timer callback handling
 volatile boolean useSmoothstep = false;
-
-// The below constant is set in "platform.h"
-uint8_t targetsPerZone = VL53L5CX_NB_TARGET_PER_ZONE;
-// The sensor can return up to 4 distances per pixel; i.e. detect 4 targets per zone.
-// The targets must be at least 600mm apart. 
-// It looks like setting targets per zone to 4 doesn't work; 3 does!
-// Code size when setting (1, 2, 3, 4) targets is (162400, 164416, 164368, 162560) bytes
-// ...looks like a problem with 4.
-// Returns are all in one array, [zone 1 return 1, zone 1 return 2, ..., zone 64 return 1, ...]
 
 void setup()
 {
@@ -158,14 +162,37 @@ void setup()
   Serial.println("MLX90640 IR Array Example");
 
   if(arcada.filesysBegin()){              // Initialize flash storage, begin setting up indices for saving BMPs
-    if(!arcada.exists(BOTTOM_DIR)) {      // Is base "MLX90640" directory absent?
-      if(arcada.mkdir(BOTTOM_DIR))        // Can it be added?
-        nextDirIndex = nextBMPindex = 1;  // Success, prepare to store numbered files & dirs
-    } else {      // "MLX90640" directory exists, can we add files | directories?
-      // Get the number of the next unused serial directory path
+    if(!arcada.exists(BOTTOM_DIR) && !arcada.exists(BOTTOM_DIR_CSV)) {      // Are base directories absent?
+      if(arcada.mkdir(BOTTOM_DIR) && arcada.mkdir(BOTTOM_DIR_CSV))        // Can they be added?
+        nextDirIndex = nextFileIndex = 1;  // Success, prepare to store numbered files & dirs
+        
+    } else if (arcada.exists(BOTTOM_DIR)) {      // "MLX90640" directory exists, can we add files | directories?
+      arcada.mkdir(BOTTOM_DIR_CSV);
+      // Get the number of the next unused serial directory path (keep CSV and BMP dirs synced)
       nextDirIndex = availableFileNumber(1, BOTTOM_DIR + String(DIR_FORMAT));
-      // and the next unused serial BMP name
-      nextBMPindex = availableFileNumber(1, BOTTOM_DIR + String(BMP_FORMAT));
+      // and the next unused serial file name
+      nextFileIndex = availableFileNumber(1, BOTTOM_DIR + String(BMP_FORMAT));
+      
+    } else if (arcada.exists(BOTTOM_DIR_CSV)) {
+      arcada.mkdir(BOTTOM_DIR);
+      // Get the number of the next unused serial directory path (keep CSV and BMP dirs synced)
+      nextDirIndex = availableFileNumber(1, BOTTOM_DIR_CSV + String(DIR_FORMAT));
+      // and the next unused serial file name
+      nextFileIndex = availableFileNumber(1, BOTTOM_DIR_CSV + String(BMP_FORMAT));
+      
+    } else {  // Both directories exist
+      // Get the number of the next unused serial directory path (keep CSV and BMP dirs synced)
+      nextDirIndex = availableFileNumber(1, BOTTOM_DIR + String(DIR_FORMAT));
+      uint16_t nextDirIndexTemp = availableFileNumber(1, BOTTOM_DIR_CSV + String(DIR_FORMAT));
+      if (nextDirIndexTemp > nextDirIndex) {
+        nextDirIndex = nextDirIndexTemp;
+      }
+      // and the next unused serial file name
+      nextFileIndex = availableFileNumber(1, BOTTOM_DIR + String(BMP_FORMAT));
+      uint16_t nextFileIndexTemp = availableFileNumber(1, BOTTOM_DIR_CSV + String(CSV_FORMAT));
+      if (nextFileIndexTemp > nextFileIndex) {
+        nextFileIndex = nextFileIndexTemp;
+      }
     }
   }  // By now each global index variable is either 0 (no nums available), or the next unclaimed serial num
 
@@ -416,6 +443,10 @@ void loop()
     }
   }
 
+  // Read all of the data into vl53All
+  for (int i=0; i < 64*targetsPerZone; i++) {
+    vl53All[i] = vl53Data.distance_mm[i];
+  }
   // Read the nearest measurement per zone from vl53Data into vl53Nearest
   for (int16_t x=0; x < 8; x++) {
     for (int16_t y=0; y < 8; y++) {
@@ -920,7 +951,7 @@ void loop()
     deBounce = millis() + DE_BOUNCE;           // and start debounce timer
     menuLoop(backColor);                       // Execute menu routine until finished
     clickFlagSelect = recordingInProg = false; // Clear unneeded flags
-    nextBMPsequence = 1;
+    nextFrameSequence = 1;
     setBackdrop(backColor, buttonRfunc);       // Repaint current BG & button labels
   }
   
@@ -965,22 +996,39 @@ void loop()
         delay(10);                                                   // Short pause
       deBounce = millis() + DE_BOUNCE;                               // Restart debounce timer
       arcada.display->fillRect(146, 48, 12, 12, backColor);          // Freeze icon off
+      
     } else if(buttonRfunc == 1) {                         // Capture requested?
-      if((nextBMPindex = availableFileNumber(nextBMPindex, BOTTOM_DIR + String(BMP_FORMAT))) != 0) { // Serialized BMP filename available?
-        save1frame = true;                                // Set the flag to save a BMP
+      // Get the next available index, taking into consideration CSV and BMP files
+      nextFileIndex = availableFileNumber(nextFileIndex, BOTTOM_DIR + String(BMP_FORMAT));
+      uint16_t nextFileIndexTemp = availableFileNumber(nextFileIndex, BOTTOM_DIR_CSV + String(CSV_FORMAT));
+      if (nextFileIndexTemp > nextFileIndex) {
+        nextFileIndex = nextFileIndexTemp;
+      }
+      if(nextFileIndex != 0) { // Serialized filename available?
+        save1frame = true;                                // Set the flag to save file(s)
         arcada.display->fillRect(0, 96, 160, 12, 0x0600); // Display a green strip
         arcada.display->setTextColor(0xFFFF);             // with white capture message text
         arcada.display->setCursor(16, 99);
         arcada.display->print("Saving frame ");
-        arcada.display->print(nextBMPindex);
+        arcada.display->print(nextFileIndex);
+      } else {
+        arcada.display->fillRect(0, 96, 160, 12, 0xF800);    // Red error signal
+        arcada.display->setTextColor(0xFFFF);                // with white text
+        arcada.display->setCursor(20, 99);
+        arcada.display->print("No filename available!");
       }
-    } else {                            // Begin or halt recording a sequence of BMP files
+    } else {                          // Begin or halt recording a sequence of BMP files
       if(!recordingInProg) {            // "A:START RECORDING" was pressed
-        if((nextDirIndex = availableFileNumber(nextDirIndex, BOTTOM_DIR + String(DIR_FORMAT))) != 0) { // Serialized directory name available?
+        nextDirIndex = availableFileNumber(nextDirIndex, BOTTOM_DIR + String(DIR_FORMAT));
+        uint16_t nextDirIndexTemp = availableFileNumber(nextDirIndex, BOTTOM_DIR_CSV + String(DIR_FORMAT));
+        if (nextDirIndexTemp > nextDirIndex) {
+          nextDirIndex = nextDirIndexTemp;
+        }
+        if(nextDirIndex != 0) { // Serialized directory name available?
           // Make the directory
           if(newDirectory()) {          // Success in making a new sequence directory?
             recordingInProg = true;     // Set the flag for saving BMP files
-            nextBMPsequence = 1;        // ...numbered starting with 00001
+            nextFrameSequence = 1;        // ...numbered starting with 00001
             setBackdrop(backColor, 3);  // Show "A:STOP RECORDING" label
           } else                        // Couldn't make the new directory, so
             nextDirIndex = 0;           // disable further sequences
@@ -992,12 +1040,12 @@ void loop()
     }
   }
 
-// Saving any BMP images to flash media happens here
-  if(save1frame || recordingInProg) {      // Write a BMP file to SD?
+  // Saving any BMP images to flash media happens here
+  if(save1frame || recordingInProg) {      // Write a file to SD?
     arcada.display->drawBitmap(146, 32, SDicon, 16, 12, 0x07E0); // Flash storage activity icon on
 
     prepForSave();                         // Save to flash.  Use global values for parameters
-    nextBMPsequence += recordingInProg ? 1 : 0;  // If recording a series, increment frame count
+    nextFrameSequence += recordingInProg ? 1 : 0;  // If recording a series, increment frame count
     save1frame = false;                    // If one frame saved, clear the flag afterwards
 
     arcada.display->fillRect(146, 32, 12, 12, backColor);        // Flash storage activity icon off
@@ -1131,7 +1179,7 @@ void setBackdrop(uint16_t bgColor, uint16_t buttonFunc) {
       break;
     case 1:
       arcada.display->print("B:MENU       ");
-      if(nextBMPindex == 0)                         // No room to store a BMP in flash media?
+      if(nextFileIndex == 0)                         // No room to store a file in flash media?
         arcada.display->setTextColor(GRAY_33 >> 1); // Grayed button label
       arcada.display->print("A:CAPTURE");
       break;
@@ -1156,11 +1204,29 @@ void prepForSave() {
   for(int x = 0; x < 768; ++x)
     pixelArray[3 * x + 2] = pixelArray[3 * x + 1] = pixelArray[3 * x];  // Copy each blue byte into R & G for 256 grays in 24 bits
 
-  if(!writeBMP()) {                                      // Did BMP write to flash fail?
-    arcada.display->fillRect(0, 96, 160, 12, 0xF800);    // Red error signal
-    arcada.display->setTextColor(0xFFFF);                // with white text
-    arcada.display->setCursor(20, 99);
-    arcada.display->print("Storage error!");
+  if (sensorMode == 0 || sensorMode > 2) {
+    if(!writeBMP()) {                                      // Did BMP write to flash fail?
+      arcada.display->fillRect(0, 96, 160, 12, 0xF800);    // Red error signal
+      arcada.display->setTextColor(0xFFFF);                // with white text
+      arcada.display->setCursor(20, 99);
+      arcada.display->print("Storage error (bmp)!");
+    }
+    if(!writeThermalCSV()) {                                      // Did csv write to flash fail?
+      arcada.display->fillRect(0, 96, 160, 12, 0xF800);    // Red error signal
+      arcada.display->setTextColor(0xFFFF);                // with white text
+      arcada.display->setCursor(20, 99);
+      arcada.display->print("Storage error (csv)!");
+    }
+  }
+
+  if (sensorMode > 0) {
+    // Write the vl53All array to file as a CSV
+    if(!writeCSV()) {                                      // Did CSV write to flash fail?
+      arcada.display->fillRect(0, 96, 160, 12, 0xF800);    // Red error signal
+      arcada.display->setTextColor(0xFFFF);                // with white text
+      arcada.display->setCursor(20, 99);
+      arcada.display->print("Storage error (csv)!");
+    }
   }
 }
 
@@ -1173,6 +1239,84 @@ boolean newDirectory() { // Create a subdirectory, converting the name between c
   return arcada.mkdir(fullPath.c_str());        // try to make a real subdirectory from it
 }
 
+boolean writeCSV() {
+  String fullPath;
+  char fileArray[64];
+
+  // First, figure out a name and path for our new CSV
+  fullPath = BOTTOM_DIR_CSV;                          // Build a filepath starting with the base subdirectory
+  if(buttonRfunc == 2) {                              // CSV sequence recording in progress?
+    sprintf(fileArray, DIR_FORMAT, nextDirIndex);     // Generate subdirectory name
+    fullPath += String(fileArray);                    // Add it to the path
+    sprintf(fileArray, CSV_FORMAT, nextFrameSequence);  // Generate a sequential filename
+    fullPath += String(fileArray);                    // Complete the filepath string
+    
+  } else {                                            // Not a sequence, solitary CSV file
+    sprintf(fileArray, CSV_FORMAT, nextFileIndex);     // Generate a serial filename
+    fullPath += String(fileArray);                    // Complete the filepath string
+  }
+
+  myFile = arcada.open(fullPath.c_str(), FILE_WRITE); // Only one file can be open at a time
+
+  if(myFile) {                      // If the file opened okay, write to it:
+    for (int target=0; target < 64; target++) {
+      for (int zone=0; zone < targetsPerZone; zone++) {
+        // https://stackoverflow.com/questions/41394063/how-to-simply-convert-a-float-to-a-string-in-c
+        int len = snprintf(NULL, 0, "%f", vl53All[target*targetsPerZone+zone]);  // Determine the length of the value in floats
+        char *result = (char*)malloc(sizeof(char) * ( len + 1 ));  // Allocate memory for a character array
+        snprintf(result, len + 1, "%f", vl53All[target*targetsPerZone+zone]);  // Convert the float and copy to the character array
+        myFile.write(result, len);  // I think this is myFile.write(array of data, size in bytes);
+        myFile.write(",", 1);
+      }
+      myFile.write("\n", 1);
+    }
+    myFile.close();
+    return true;
+  } else {          // The file didn't open, return error
+    return false;
+  }
+
+}
+
+boolean writeThermalCSV() {
+  // Write a csv file of the data from the MLX
+  String fullPath;
+  char fileArray[64];
+
+  // First, figure out a name and path for our new CSV
+  fullPath = BOTTOM_DIR;                          // Build a filepath starting with the base subdirectory
+  if(buttonRfunc == 2) {                              // CSV sequence recording in progress?
+    sprintf(fileArray, DIR_FORMAT, nextDirIndex);     // Generate subdirectory name
+    fullPath += String(fileArray);                    // Add it to the path
+    sprintf(fileArray, CSV_FORMAT, nextFrameSequence);  // Generate a sequential filename
+    fullPath += String(fileArray);                    // Complete the filepath string
+    
+  } else {                                            // Not a sequence, solitary CSV file
+    sprintf(fileArray, CSV_FORMAT, nextFileIndex);     // Generate a serial filename
+    fullPath += String(fileArray);                    // Complete the filepath string
+  }
+
+  myFile = arcada.open(fullPath.c_str(), FILE_WRITE); // Only one file can be open at a time
+
+  if(myFile) {                      // If the file opened okay, write to it:
+    for(int y = 0; y < 24; ++y) {  // Rows count from bottom up
+      for(int x = 0; x < 32; x++) {
+        // https://stackoverflow.com/questions/41394063/how-to-simply-convert-a-float-to-a-string-in-c
+        int len = snprintf(NULL, 0, "%f", mlx90640To[32 * y + x]);  // Determine the length of the value in floats
+        char *result = (char*)malloc(sizeof(char) * ( len + 1 ));  // Allocate memory for a character array
+        snprintf(result, len + 1, "%f", mlx90640To[32 * y + x]);  // Convert the float and copy to the character array
+        myFile.write(result, len);  // I think this is myFile.write(array of data, size in bytes);
+        myFile.write(",", 1);
+      }
+      myFile.write("\n", 1);
+    }
+    myFile.close();
+    return true;
+  } else {          // The file didn't open, return error
+    return false;
+  }
+}
+
 // Here we write the actual bytes of a BMP file (plus extras) to flash media
 boolean writeBMP() {
   uint16_t counter1, shiftedFloats[14]; // A buffer for the appended floats and uint16_t's
@@ -1181,15 +1325,15 @@ boolean writeBMP() {
   char fileArray[64];
   String fullPath;
 
-// First, figure out a name and path for our new BMP
+  // First, figure out a name and path for our new BMP
   fullPath = BOTTOM_DIR;                              // Build a filepath starting with the base subdirectory
   if(buttonRfunc == 2) {                              // BMP sequence recording in progress?
     sprintf(fileArray, DIR_FORMAT, nextDirIndex);     // Generate subdirectory name
     fullPath += String(fileArray);                    // Add it to the path
-    sprintf(fileArray, BMP_FORMAT, nextBMPsequence);  // Generate a sequential filename
+    sprintf(fileArray, BMP_FORMAT, nextFrameSequence);  // Generate a sequential filename
     fullPath += String(fileArray);                    // Complete the filepath string
   } else {                                            // Not a sequence, solitary BMP file
-    sprintf(fileArray, BMP_FORMAT, nextBMPindex);     // Generate a serial filename
+    sprintf(fileArray, BMP_FORMAT, nextFileIndex);     // Generate a serial filename
     fullPath += String(fileArray);                    // Complete the filepath string
   }
 
