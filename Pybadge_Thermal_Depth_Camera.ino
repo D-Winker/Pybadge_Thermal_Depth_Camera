@@ -763,7 +763,7 @@ void loop()
               }
             }
           }
-          // TODO: Calculate these appropriately (I think right now we only consider the closest returns)
+          
           colorLow = colorLow53;
           colorHigh = colorHigh53;
         } else if (sensorMode == 4) {
