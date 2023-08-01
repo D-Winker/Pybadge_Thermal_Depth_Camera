@@ -1,3 +1,4 @@
+// Pybadge Thermal Depth Camera
 // TODO: Clean up this header
 // The VL53L5CX has a 45x45 degree FoV (65 degree diagonal FoV)
 // Regarding FoV: AN5894, Description of the fields of view of STMicroelectronics' Time-of-Flight sensors
@@ -8,6 +9,7 @@
 // The sensor returns perpendicular distance, not radial distance
 // 
 // SPDX-FileCopyrightText: 2020 Anne Barela for Adafruit Industries
+// Modified by Daniel Winker, 2023
 //
 // SPDX-License-Identifier: MIT
 
@@ -140,8 +142,18 @@ boolean mirrorFlag = false, celsiusFlag = false, markersOn = true,
         screenDim = false, smoothing = false, showLastCap = false,
         save1frame = false, recordingInProg = false, buttonActive = false;
 float battAverage = 0.0, colorLow = 0.0, colorHigh = 100.0, colorLow53 = 0.0, colorHigh53 = 100.0;        // Values for managing color range
-volatile boolean clickFlagMenu = false, clickFlagSelect = false, clickFlagUpsample = false, clickFlagSmoothstep = false, clickFlagSwitchMode = false;   // Volatiles for timer callback handling
+volatile boolean clickFlagMenu = false, clickFlagSelect = false, clickFlagUpsample = false, clickFlagSmoothstep = false, clickFlagSwitchMode = false, clickFlagEWMA = false;   // Volatiles for timer callback handling
 volatile boolean useSmoothstep = false;
+
+// Variables used for an exponentially weighted moving average (EWMA)
+int ewma = 0;
+const int numAlphas = 5;
+float alphas[numAlphas] = {1.0, 0.9, 0.5, 0.1, 0.01};
+float alpha = alphas[ewma];  
+
+// This will hold all of the pixels that we draw from either the thermal camera, depth camera, or both
+float imageArea[768*4*4] = {0};
+float imageArea2[768*4*4] = {0};  // A second channel of data to display
 
 void setup()
 {
@@ -483,8 +495,8 @@ void loop()
     }
   }
   if(thermRange == 0) {    // Are the colors set to auto-range?
-    colorLow53 = lowPix53;     // Then high and low color values get updated
-    colorHigh53 = highPix53;
+    colorLow53 = alpha * lowPix53 + (1 - alpha) * colorLow53;     // Then high and low color values get updated
+    colorHigh53 = alpha * highPix53 + (1 - alpha) * colorHigh53;
   }
   sneakFloatsVL53[0] = lowPix53;     // Retain these five distance values
   sneakFloatsVL53[1] = colorLow53;   // to append to the BMP file, if any
@@ -515,8 +527,8 @@ void loop()
     }
   }
   if(thermRange == 0) {    // Are the colors set to auto-range?
-    colorLow = lowPix;     // Then high and low color values get updated
-    colorHigh = highPix;
+    colorLow = alpha * lowPix + (1 - alpha) * colorLow;     // Then high and low color values get updated
+    colorHigh = alpha * highPix + (1 - alpha) * colorHigh;
   }
   sneakFloats[0] = lowPix;     // Retain these five temperature values
   sneakFloats[1] = colorLow;   // to append to the BMP file, if any
@@ -533,10 +545,6 @@ void loop()
 
   // For the depth camera
   //float vl53Up[64*upsample*upsample] = {0};  // For the upsampled output of the VL53L5CX measurements
-
-  // This will hold all of the pixels that we draw from either the thermal camera, depth camera, or both
-  float imageArea[768*4*4] = {0};
-  float imageArea2[768*4*4] = {0};  // A second channel of data to display
   
   // We want to overlay the depth camera data.
   // The VL53L5CX has a 45x45 degree FoV (65 degree diagonal FoV) and 8x8 sensing zones
@@ -551,11 +559,13 @@ void loop()
   
   if (sensorMode == 0 || sensorMode == 3 || sensorMode == 4) {
     // DEBUG fill the imageArea array with a test pattern
+    /*
     for(int y = 0; y < 96; y++) {
       for(int x = 0; x < 128; x++) {
         imageArea[128 * y + x] = abs(abs(y%2 - x%2)*255 - (x+y));
       }
     }
+    */
     // END DEBUG
     // loop over all the pixels in the output grid
     for (int i = 0; i < 24*upsample; i++) {
@@ -577,7 +587,7 @@ void loop()
         int pxlMult = 4 / upsample;
         for (int pxlIndexi=0; pxlIndexi < pxlMult; pxlIndexi++) {
           for (int pxlIndexj=0; pxlIndexj < pxlMult; pxlIndexj++) {
-            imageArea[128 * (i * pxlMult + pxlIndexi) + j * pxlMult + pxlIndexj] = pixVal;
+            imageArea[128 * (i * pxlMult + pxlIndexi) + j * pxlMult + pxlIndexj] = alpha * pixVal + (1 - alpha) * imageArea[128 * (i * pxlMult + pxlIndexi) + j * pxlMult + pxlIndexj];
           }
         }
       
@@ -616,7 +626,7 @@ void loop()
               int pxlMult = 12 / upsample;
               for (int16_t i=0; i < pxlMult; i++) {
                 for (int16_t j=0; j < pxlMult; j++) {
-                  imageArea[(offst + x * pxlMult + i) + ((y * pxlMult + j) * 128)] = interpolate(xf, yf, vl53Nearest, useSmoothstep, 8);
+                  imageArea[(offst + x * pxlMult + i) + ((y * pxlMult + j) * 128)] = alpha * interpolate(xf, yf, vl53Nearest, useSmoothstep, 8) + (1 - alpha) * imageArea[(offst + x * pxlMult + i) + ((y * pxlMult + j) * 128)];
                 }
               }
             }
@@ -647,7 +657,7 @@ void loop()
               float y = angleY / 5.625 + 4;
 
               // Get the value for the output pixel by interpolating
-              imageArea2[j + i * 128] = interpolate(x, y, vl53Nearest, useSmoothstep, 8);
+              imageArea2[j + i * 128] = alpha * interpolate(x, y, vl53Nearest, useSmoothstep, 8) + (1 - alpha) * imageArea2[j + i * 128];
               
             }
           }
@@ -665,7 +675,6 @@ void loop()
     {
       if (myImager.getRangingData(&vl53Data)) //Read distance data into array
       {        
-        //TODO: Do we need an EWMA option?
 
         // Average the distances reported for each zone, split each zone into 3x3 pixels, do bilinear interpolation, then assign each pixel the closest detected value in its zone
         // define the size of the input and output grids
@@ -758,7 +767,7 @@ void loop()
               int pxlMult = 4 / upsample;
               for (int16_t i=0; i < pxlMult; i++) {
                 for (int16_t j=0; j < pxlMult; j++) {
-                  imageArea[(offst + x * pxlMult + i) + (((8*targetsPerZone*upsample-y-1) * pxlMult + j) * 128)] = interpolate(xf, yf, outputData, useSmoothstep, 8*targetsPerZone);
+                  imageArea[(offst + x * pxlMult + i) + (((8*targetsPerZone*upsample-y-1) * pxlMult + j) * 128)] = alpha * interpolate(xf, yf, outputData, useSmoothstep, 8*targetsPerZone) + (1 - alpha) * imageArea[(offst + x * pxlMult + i) + (((8*targetsPerZone*upsample-y-1) * pxlMult + j) * 128)];
                 }
               }
             }
@@ -792,7 +801,7 @@ void loop()
               float y = angleY / degPerPx + 8 * targetsPerZone / 2;
 
               // Get the value for the output pixel by interpolating
-              imageArea2[j + (95 - i) * 128] = interpolate(x, y, outputData, useSmoothstep, 8*targetsPerZone);
+              imageArea2[j + (95 - i) * 128] = alpha * interpolate(x, y, outputData, useSmoothstep, 8*targetsPerZone) + (1 - alpha) * imageArea2[j + (95 - i) * 128];
               
             }
           }
@@ -800,12 +809,13 @@ void loop()
       }
     }
   } 
+
   
   // The dual-channel (thermal+depth) modes will be drawn into the red and blue channels, rather than use the existing colormaps.
   // colorPal is an array of uint16_t's, in each value the top 5 bits define red, the middle 6 define green, and the bottom 5 bits define blue
   if (sensorMode > 2) {
     // Dual channel mode    
-    // Draw the image from the single-pixel array
+    // Draw the image from the single-pixel arrays
     if(mirrorFlag) {                 // Mirrored display (selfie mode)?
       for(int y = 0; y < 24*4; ++y) {  // Rows count from bottom up
         for(int x = 0; x < 32*4; x++) {
@@ -934,18 +944,27 @@ void loop()
     }
   }
 
-// Print the frame count on the left sidebar
+  // Print the frame count and upsample setting on the left sidebar
   arcada.display->setRotation(0);    // Vertical printing
-  arcada.display->setCursor(48, 4);
+  
+  arcada.display->setCursor(40, 4);
   arcada.display->setTextColor(0xFFFF, backColor); // White text, current BG
   arcada.display->print("FRM ");
   arcada.display->print(++frameCounter);
-  arcada.display->setCursor(96, 4);
+  
+  arcada.display->setCursor(100, 4);
   arcada.display->print("UP ");
   arcada.display->print(upsample);
+  
+  // Print the EWMA setting on the right sidebar
+  arcada.display->setCursor(34, 146);
+  arcada.display->print("EWMA ");
+  arcada.display->print(alpha);
+  
   arcada.display->setRotation(1);    // Back to horizontal
+    
 
-// Handle any button presses
+  // Handle any button presses
   if(!buttonActive && clickFlagMenu) {         // Was B:MENU button pressed?
     buttonActive = true;                       // Set button flag
     deBounce = millis() + DE_BOUNCE;           // and start debounce timer
@@ -965,6 +984,16 @@ void loop()
     } else {
       upsample++;
     }
+  }
+
+  if(!buttonActive && clickFlagEWMA) {
+    buttonActive = true;                       // Set button flag
+    deBounce = millis() + DE_BOUNCE;           // and start debounce timer
+    ewma++;
+    if(ewma >= numAlphas) {
+      ewma = 0;
+    }
+    alpha = alphas[ewma];
   }
 
   if(!buttonActive && clickFlagSmoothstep) {
@@ -1064,7 +1093,7 @@ void loop()
      & (ARCADA_BUTTONMASK_B | ARCADA_BUTTONMASK_A)) == 0)  // Has de-bounce wait expired & all buttons released?
     buttonActive = false;                // Clear flag to allow another button press
 
-  clickFlagMenu = clickFlagSelect = clickFlagUpsample = clickFlagSmoothstep = clickFlagSwitchMode = false; // End of the loop, clear all interrupt flags
+  clickFlagMenu = clickFlagSelect = clickFlagUpsample = clickFlagSmoothstep = clickFlagSwitchMode = clickFlagEWMA = false; // End of the loop, clear all interrupt flags
 }
 
 // Compute and fill an array with 256 16-bit color values
@@ -1646,7 +1675,7 @@ void menuLines(int lineNumber, int scrollPos) {  // Screen print a single line i
 }
 
 // This is the function that substitutes for GPIO external interrupts
-// It will check for A and B and Up button presses at 50Hz
+// It will check for button presses at 50Hz
 void buttonCatcher(void) {
   buttonBits = arcada.readButtons();
   clickFlagMenu |= (buttonBits & ARCADA_BUTTONMASK_B) != 0;
@@ -1654,6 +1683,7 @@ void buttonCatcher(void) {
   clickFlagUpsample |= (buttonBits & ARCADA_BUTTONMASK_UP) != 0;
   clickFlagSmoothstep |= (buttonBits & ARCADA_BUTTONMASK_RIGHT) != 0;
   clickFlagSwitchMode |= (buttonBits & ARCADA_BUTTONMASK_DOWN) != 0;
+  clickFlagEWMA |= (buttonBits & ARCADA_BUTTONMASK_LEFT) != 0;
 }
 
 void drawtext(const char *text, uint16_t color) {
