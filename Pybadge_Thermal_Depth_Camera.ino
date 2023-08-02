@@ -142,7 +142,8 @@ boolean mirrorFlag = false, celsiusFlag = false, markersOn = true,
         screenDim = false, smoothing = false, showLastCap = false,
         save1frame = false, recordingInProg = false, buttonActive = false;
 float battAverage = 0.0, colorLow = 0.0, colorHigh = 100.0, colorLow53 = 0.0, colorHigh53 = 100.0;        // Values for managing color range
-volatile boolean clickFlagMenu = false, clickFlagSelect = false, clickFlagUpsample = false, clickFlagSmoothstep = false, clickFlagSwitchMode = false, clickFlagEWMA = false;   // Volatiles for timer callback handling
+volatile boolean clickFlagMenu = false, clickFlagSelect = false, clickFlagUpsample = false, clickFlagSmoothstep = false, 
+clickFlagSwitchMode = false, clickFlagEWMA = false, clickFlagFramerate = false;   // Volatiles for timer callback handling
 volatile boolean useSmoothstep = false;
 
 // Variables used for an exponentially weighted moving average (EWMA)
@@ -150,6 +151,10 @@ int ewma = 0;
 const int numAlphas = 5;
 float alphas[numAlphas] = {1.0, 0.9, 0.5, 0.1, 0.01};
 float alpha = alphas[ewma];  
+
+bool frameCountMode = true;  // true displays frame count, false displays frame rate
+float screenfps = 10;  // Just some initial value
+unsigned long prevMillis = millis();
 
 // This will hold all of the pixels that we draw from either the thermal camera, depth camera, or both
 float imageArea[768*4*4] = {0};
@@ -949,8 +954,17 @@ void loop()
   
   arcada.display->setCursor(40, 4);
   arcada.display->setTextColor(0xFFFF, backColor); // White text, current BG
-  arcada.display->print("FRM ");
-  arcada.display->print(++frameCounter);
+  ++frameCounter;
+  if (frameCountMode) {
+    arcada.display->print("FRM ");
+    arcada.display->print(frameCounter);
+  } else {
+    arcada.display->print("FPS ");
+    // Calculate frame rate, and apply an EWMA
+    screenfps = 0.5 * screenfps + 0.5 * 1000 / (millis() - prevMillis);
+    prevMillis = millis();
+    arcada.display->print(screenfps);
+  }
   
   arcada.display->setCursor(100, 4);
   arcada.display->print("UP ");
@@ -994,6 +1008,12 @@ void loop()
       ewma = 0;
     }
     alpha = alphas[ewma];
+  }
+
+  if(!buttonActive && clickFlagFramerate) {
+    buttonActive = true;                       // Set button flag
+    deBounce = millis() + DE_BOUNCE;           // and start debounce timer
+    frameCountMode = !frameCountMode;
   }
 
   if(!buttonActive && clickFlagSmoothstep) {
@@ -1093,7 +1113,7 @@ void loop()
      & (ARCADA_BUTTONMASK_B | ARCADA_BUTTONMASK_A)) == 0)  // Has de-bounce wait expired & all buttons released?
     buttonActive = false;                // Clear flag to allow another button press
 
-  clickFlagMenu = clickFlagSelect = clickFlagUpsample = clickFlagSmoothstep = clickFlagSwitchMode = clickFlagEWMA = false; // End of the loop, clear all interrupt flags
+  clickFlagMenu = clickFlagSelect = clickFlagUpsample = clickFlagSmoothstep = clickFlagSwitchMode = clickFlagEWMA = clickFlagFramerate = false; // End of the loop, clear all interrupt flags
 }
 
 // Compute and fill an array with 256 16-bit color values
@@ -1684,6 +1704,7 @@ void buttonCatcher(void) {
   clickFlagSmoothstep |= (buttonBits & ARCADA_BUTTONMASK_RIGHT) != 0;
   clickFlagSwitchMode |= (buttonBits & ARCADA_BUTTONMASK_DOWN) != 0;
   clickFlagEWMA |= (buttonBits & ARCADA_BUTTONMASK_LEFT) != 0;
+  clickFlagFramerate |= (buttonBits & ARCADA_BUTTONMASK_SELECT) != 0;
 }
 
 void drawtext(const char *text, uint16_t color) {
