@@ -13,6 +13,22 @@
 //
 // SPDX-License-Identifier: MIT
 
+/* Attempts to improve the framerate
+ *  0: No improvements. Initial baseline.
+ *  1: Precalculate the frame transforms used for the dual-sensor modes (slight improvement to the relevant modes)
+ * Mode    Upsample  Smoothstep   0      1
+ * Thermal    1          0       2.63  2.5
+ * Thermal    2          0       1.97  1.97
+ * Thermal    4          0       1.58  1.57
+ * Thermal    4          1       1.31  1.31
+ * Depth      1          0       1.8   1.8
+ * Depth      4          1       1.31  1.31
+ * Both       1          0       1.31  1.57
+ * Both       4          1       0.72  0.79
+ * 
+ * 
+ */
+
 /*
   ThermalImager_009b - Collect thermal image values from a MLX90640 sensor array,
                        display them as color-mapped pixels on a TFT screen,
@@ -156,6 +172,13 @@ bool frameCountMode = true;  // true displays frame count, false displays frame 
 float screenfps = 10;  // Just some initial value
 unsigned long prevMillis = millis();
 
+// These two arrays will be populated with values for an 
+// approximate transform between the depth and thermal coordinate frames
+int jToX[128];
+int iToY[96];
+int jToX2[128];
+int iToY2[96];
+
 // This will hold all of the pixels that we draw from either the thermal camera, depth camera, or both
 float imageArea[768*4*4] = {0};
 float imageArea2[768*4*4] = {0};  // A second channel of data to display
@@ -212,6 +235,37 @@ void setup()
       }
     }
   }  // By now each global index variable is either 0 (no nums available), or the next unclaimed serial num
+
+  // --------------------------------------------------------------------------------------------------
+
+  // Precalculate the values for jToX and iToY (this is an approximate transform between the depth and thermal coordinate frames)
+  // First, convert each pixel coordinate (cartesian, origin at upper left) into an angular deflection from center in x and y, from the perspective of the thermal camera.
+  // Because both axes are an even number of pixels in length, the center is between four pixels - (63.5, 47.5) - remember indices run from [0, 95] and [0, 127]
+  // Angle per-pixel is (0.4297, 0.3646). 
+  // Then, convert each pixel coordinate from angular-deflection-from-center to Cartesian in the frame of the depth camera.
+  // The depth camera's FoV is 45x45 degrees, so 22.5 degrees in each direction from center
+  for (int16_t i=0; i < 96; i++) {
+    float angleY = (i - 47.5) * 0.3646;    
+    iToY[i] = angleY / 5.625 + 4;      
+  }
+  
+  for (int16_t j=0; j < 128; j++) { 
+    float angleX = (j - 63.5) * 0.4297;
+    jToX[j] = angleX / 5.625 + 4;
+  }
+
+  float degPerPx = 22.5 / (8 * targetsPerZone / 2);
+  for (int16_t j=0; j < 128; j++) {
+    float angleX = (j - 63.5) * 0.4297;
+    jToX2[j] = angleX / degPerPx + 8 * targetsPerZone / 2;
+  }
+  
+  for (int16_t i=0; i < 96; i++) {
+    float angleY = (i - 47.5) * 0.3646;
+    iToY2[i] = angleY / degPerPx + 8 * targetsPerZone / 2;
+  }
+
+  // --------------------------------------------------------------------
 
   // Set up VL53L5CX
   Wire.begin(); //This resets to 100kHz I2C
@@ -582,8 +636,6 @@ void loop()
     
         // perform bilinear interpolation and store the result
         //TODO: Make it faster! I'm not sure how, but wow it's slow right now with the 4x interpolation!
-        // 32 * upsample is the number of pixels in a row
-        //mlx90640Up[32 * upsample * i + j] = interpolate(x, y, mlx90640To, useSmoothstep);
         float pixVal = interpolate(x, y, mlx90640To, useSmoothstep);
         //pixVal = abs(abs(int(y)%2 - int(x)%2)*512 - ((int(x)+1)+(int(y)+1))) / 2;  // DEBUG (checkerboard)
         
@@ -648,22 +700,9 @@ void loop()
 
           // The imageArea array is drawn as a 96x128 pixel image
           for (int16_t i=0; i < 96; i++) {
-            for (int16_t j=0; j < 128; j++) {
-              // TODO: Precalculate the below, if we have memory
-              // Convert each pixel coordinate (cartesian, origin at upper left) into an angular deflection from center in x and y, from the perspective of the thermal camera.
-              // Because both axes are an even number of pixels in length, the center is between four pixels - (63.5, 47.5) - remember indices run from [0, 95] and [0, 127]
-              // From the above comment block, angle per-pixel is (0.4297, 0.3646). 
-              float angleX = (j - 63.5) * 0.4297;
-              float angleY = (i - 47.5) * 0.3646;
-              
-              // Convert each pixel coordinates from angular deflection from center to cartesian in the frame of the depth camera
-              // From the above comment block, the depth camera's FoV is 45x45 degrees, so 22.5 degrees in each direction from center
-              float x = angleX / 5.625 + 4;
-              float y = angleY / 5.625 + 4;
-
+            for (int16_t j=0; j < 128; j++) {              
               // Get the value for the output pixel by interpolating
-              imageArea2[j + i * 128] = alpha * interpolate(x, y, vl53Nearest, useSmoothstep, 8) + (1 - alpha) * imageArea2[j + i * 128];
-              
+              imageArea2[j + i * 128] = alpha * interpolate(jToX[j], iToY[i], vl53Nearest, useSmoothstep, 8) + (1 - alpha) * imageArea2[j + i * 128];
             }
           }
         }
@@ -792,22 +831,8 @@ void loop()
           // The imageArea array is drawn as a 96x128 pixel image
           for (int16_t i=0; i < 96; i++) {
             for (int16_t j=0; j < 128; j++) {
-              // TODO: Precalculate the below, if we have memory
-              // Convert each pixel coordinate (cartesian, origin at upper left) into an angular deflection from center in x and y, from the perspective of the thermal camera.
-              // Because both axes are an even number of pixels in length, the center is between four pixels - (63.5, 47.5) - remember indices run from [0, 95] and [0, 127]
-              // From the above comment block, angle per-pixel is (0.4297, 0.3646). 
-              float angleX = (j - 63.5) * 0.4297;
-              float angleY = (i - 47.5) * 0.3646;
-              
-              // Convert each pixel coordinates from angular deflection from center to cartesian in the frame of the depth camera
-              // From the above comment block, the depth camera's FoV is 45x45 degrees, so 22.5 degrees in each direction from center
-              float degPerPx = 22.5 / (8 * targetsPerZone / 2);
-              float x = angleX / degPerPx + 8 * targetsPerZone / 2;
-              float y = angleY / degPerPx + 8 * targetsPerZone / 2;
-
               // Get the value for the output pixel by interpolating
-              imageArea2[j + (95 - i) * 128] = alpha * interpolate(x, y, outputData, useSmoothstep, 8*targetsPerZone) + (1 - alpha) * imageArea2[j + (95 - i) * 128];
-              
+              imageArea2[j + (95 - i) * 128] = alpha * interpolate(jToX2[j], iToY2[i], outputData, useSmoothstep, 8*targetsPerZone) + (1 - alpha) * imageArea2[j + (95 - i) * 128];
             }
           }
         }
@@ -828,15 +853,8 @@ void loop()
           // Invert the colors for distance - I just prefer closer = brighter (and hotter = brighter, which is default), so this has to be inverted
           scaledPix += 31.0 - (uint16_t)constrain((imageArea2[128 * y + x] - colorLow53) / (colorHigh53 - colorLow53) * 31.9, 0.0, 31.0);
           
-          // fillRect(x0, y0, w, h, color); (x0, y0) is the upper left corner.
-          //arcada.display->fillRect(140 - x, 92 - y * 1, 1, 1, (uint16_t)scaledPix);  // Filled rectangles, bottom up
-          //original, works as expected scaledPix = constrain((imageArea[128 * y + x] - colorLow) / (colorHigh - colorLow) * 255.9, 0.0, 255.0);
-          //original, works as expected arcada.display->fillRect(140 - x, 92 - y * pxSize, 1, pxSize, colorPal[(uint16_t)scaledPix]);  // Filled rectangles, bottom up
-          //arcada.display->fillRect(140 - x, 92 - y * pxSize, 1, pxSize, scaledPix);  // Filled rectangles, bottom up
-          arcada.display->drawPixel(140 - x, 95 - y, scaledPix);  // Fill pixels from the bottom up
-          //arcada.display->fillRect(140 - x, 92 - y, 1, 1, scaledPix);  // Filled rectangles, bottom up
-          // TODO: Replace all fillRects for single pixels with drawPixel(140 - x, 92 - y, (uint16_t)scaledPix); <- presumably it's faster than fillRect
-    
+          // drawPixel(x0, y0, color);
+          arcada.display->drawPixel(140 - x, 95 - y, scaledPix);  // Fill pixels from the bottom up    
         }
       }
     } else {  // Not mirrored
@@ -846,17 +864,8 @@ void loop()
           scaledPix = ((uint16_t)constrain((imageArea[128 * y + x] - colorLow) / (colorHigh - colorLow) * 31.9, 0.0, 31.0)) << 11;
           // Invert the colors for distance - I just prefer closer = brighter (and hotter = brighter, which is default), so this has to be inverted
           scaledPix += 31.0 - (uint16_t)constrain((imageArea2[128 * y + x] - colorLow53) / (colorHigh53 - colorLow53) * 31.9, 0.0, 31.0);
-          // fillRect(x0, y0, w, h, color); (x0, y0) is the upper left corner.
-          //arcada.display->fillRect(16 + x, 92 - y * 1, 1, 1, (uint16_t)scaledPix);
-          //original, works as expected scaledPix = constrain((imageArea[128 * y + x] - colorLow) / (colorHigh - colorLow) * 255.9, 0.0, 255.0);
-          //original, works as expected arcada.display->fillRect(16 + x, 92 - y * pxSize, 1, pxSize, colorPal[(uint16_t)scaledPix]);
-          //arcada.display->fillRect(16 + x, 92 - y * pxSize, 1, pxSize, scaledPix);
-          //arcada.display->drawPixel(16 + x, 95 - y, colorPal[(uint16_t)scaledPix]);  // Woops! We don't want to use the color palette here, but if we do...it looks kinda neat actually
+          // drawPixel(x0, y0, color);
           arcada.display->drawPixel(16 + x, 95 - y, scaledPix);  // Fill pixels from the bottom up
-          //pxSize in 'y0' does in fact change where pixels are drawn - if I make it 1 when it expects 4, the pixels get squished down into the lower left corner (1/4 of the screen vertically and horizontally)
-          //pxSize in 'h' does control the height of the pixels - set to 1 it only draws every 4th line
-          //Now, what's going on that I have height set by pxSize, but not width? How does it draw correctly across the width dimension?
-          //arcada.display->fillRect(16 + x, 92 - y, 1, 1, scaledPix);
           
         }
       }
@@ -874,7 +883,7 @@ void loop()
           if (sensorMode == 1 || sensorMode == 2) {
             scaledPix = 255.0 - scaledPix;
           }
-          // fillRect(x0, y0, w, h, color); (x0, y0) is the upper left corner.
+          // drawPixel(x0, y0, color);
           arcada.display->drawPixel(140 - x, 95 - y, colorPal[(uint16_t)scaledPix]);  // Fill pixels from the bottom up
     
         }
@@ -887,7 +896,7 @@ void loop()
           if (sensorMode == 1 || sensorMode == 2) {
             scaledPix = 255.0 - scaledPix;
           }
-          // fillRect(x0, y0, w, h, color); (x0, y0) is the upper left corner. Origin (0, 0) is the upper left corner of the screen.
+          // drawPixel(x0, y0, color);
           //arcada.display->drawPixel(16 + x, 95 - y, colorPal[(uint16_t)(abs(abs(y%2 - x%2)*255 - (x+y)))]);  // DEBUG
           arcada.display->drawPixel(16 + x, 95 - y, colorPal[(uint16_t)scaledPix]);  // Fill pixels from the bottom up
         }
