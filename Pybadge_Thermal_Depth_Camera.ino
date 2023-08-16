@@ -16,15 +16,30 @@
 /* Attempts to improve the framerate
  *  0: No improvements. Initial baseline.
  *  1: Precalculate the frame transforms used for the dual-sensor modes (slight improvement to the relevant modes)
- * Mode    Upsample  Smoothstep   0      1
- * Thermal    1          0       2.63  2.5
- * Thermal    2          0       1.97  1.97
- * Thermal    4          0       1.58  1.57
- * Thermal    4          1       1.31  1.31
- * Depth      1          0       1.8   1.8
- * Depth      4          1       1.31  1.31
- * Both       1          0       1.31  1.57
- * Both       4          1       0.72  0.79
+ *  2: Precalculate halfInverseUpsample = (1.0 / (float) upsample) / 2;
+ *  3: Precalculate alpha, change 'int's in for() loops to uint8_t or uint16_t, rearrange the 'imagearea[...] = ...;' equation at the heart of the quad-nested loops (it runs 12,288 times!)
+ *  4: Change "Optimize" from "Small" to "Fastest"
+ *  5: Change "Optimize" to "Here be dragons"
+ *     (I changed back to "Small")
+ *  6: Overclock from 120 MHz to 150 MHz
+ *  7: Commented out the data processing (moving the data into the pixel array(s))
+ *     A-ha! There's something else slowing it all down...
+ *  8: There were 'return;'s in two cases where reading data failed; those have been removed -> no change.
+ *  9: Commented out drawing the image array(s)
+ *  10: What's left? Reading the sensors? Maybe I should copy the code so I don't make this file too messy...
+ *  
+ *  I found one website that says: use the smallest datatype possible (ex. uint8_t), another says use int8 not uint8, and another says just use 'int' and let the compiler optimize
+ *  It sounds like local variables are faster than global because theyre stored on the stack rather than the heap
+ *  https://forum.pjrc.com/threads/61561-Teensy-4-Global-vs-local-variables-speed-of-execution#:~:text=Usually%20there%20is%20little%20or,which%20is%20worthwhile%20for%20performance.
+ * Mode    Upsample  Smoothstep   0      1     2    3     4     5     6     7     9
+ * Thermal    1          0       2.63  2.5   2.63  2.63  2.25  2.25  2.62  2.62  3.94
+ * Thermal    2          0       1.97  1.97  1.97  1.97  1.97  1.97  2.62  2.62  3.94
+ * Thermal    4          0       1.58  1.57  1.58  1.58  1.57  1.57  1.97  2.62  3.94
+ * Thermal    4          1       1.31  1.31  1.31  1.31  1.25  1.31  1.57  2.62  3.94
+ * Depth      1          0       1.8   1.8   1.96  1.96  1.57  1.57  1.96  2.62  3.94
+ * Depth      4          1       1.31  1.31  1.31  1.31  1.31  1.31  1.57  2.62  3.94
+ * Both       1          0       1.31  1.57  1.57  1.58  1.44  1.44  1.31  1.97  3.94
+ * Both       4          1       0.72  0.79  0.88  0.88  0.79  0.84  0.98  1.97  3.94
  * 
  * 
  */
@@ -78,6 +93,7 @@ File myFile;
 
 float mlx90640To[768];   // Here we receive the float vals acquired from MLX90640
 uint8_t upsample = 1;  // This can be changed from 1 to 4 with the Up button
+float halfInverseUpsample = (1.0 / (float) upsample) / 2;  // Precalculating this to save time in some calls
 uint8_t sensorMode = 0;  // 0 = thermal, 1 = depth, 2 = 'intelligent' depth, 3 = thermal + depth, 4 = thermal + 'intelligent' depth
 
 #define DE_BOUNCE 200
@@ -167,6 +183,7 @@ int ewma = 0;
 const int numAlphas = 5;
 float alphas[numAlphas] = {1.0, 0.9, 0.5, 0.1, 0.01};
 float alpha = alphas[ewma];  
+float invAlpha = 1 - alpha;  // Precalculate this value to save a smidge of time in our nested loops
 
 bool frameCountMode = true;  // true displays frame count, false displays frame rate
 float screenfps = 10;  // Just some initial value
@@ -244,23 +261,23 @@ void setup()
   // Angle per-pixel is (0.4297, 0.3646). 
   // Then, convert each pixel coordinate from angular-deflection-from-center to Cartesian in the frame of the depth camera.
   // The depth camera's FoV is 45x45 degrees, so 22.5 degrees in each direction from center
-  for (int16_t i=0; i < 96; i++) {
+  for (uint8_t i=0; i < 96; i++) {
     float angleY = (i - 47.5) * 0.3646;    
     iToY[i] = angleY / 5.625 + 4;      
   }
   
-  for (int16_t j=0; j < 128; j++) { 
+  for (uint8_t j=0; j < 128; j++) { 
     float angleX = (j - 63.5) * 0.4297;
     jToX[j] = angleX / 5.625 + 4;
   }
 
   float degPerPx = 22.5 / (8 * targetsPerZone / 2);
-  for (int16_t j=0; j < 128; j++) {
+  for (uint8_t j=0; j < 128; j++) {
     float angleX = (j - 63.5) * 0.4297;
     jToX2[j] = angleX / degPerPx + 8 * targetsPerZone / 2;
   }
   
-  for (int16_t i=0; i < 96; i++) {
+  for (uint8_t i=0; i < 96; i++) {
     float angleY = (i - 47.5) * 0.3646;
     iToY2[i] = angleY / degPerPx + 8 * targetsPerZone / 2;
   }
@@ -427,7 +444,7 @@ void setup()
   }
   Wire.setClock(1000000); // max 1 MHz
 
-  for(int counter01 = 0; counter01 < 2304; ++counter01)
+  for(uint16_t counter01 = 0; counter01 < 2304; ++counter01)
     pixelArray[counter01] = counter01 / 9;  // Initialize BMP pixel buffer with a gradient
 
   loadPalette(paletteNum);             // Load false color palette
@@ -504,34 +521,36 @@ void loop()
   arcada.display->drawBitmap(146, 2, battIcon, 16, 12, 0xC618);         // Redraw gray battery icon
   arcada.display->fillRect(150, 12 - highPix, 4, highPix, markColor);   // Add the level bar
 
+  /*
+  !!!!!!!!!!!!!!!!!!!!!!!!
+  TODO: The below read is redundant, but we need the stuff following it
   // Check if distance sensor has data ready; read in the data
   if (myImager.isDataReady() == true)
   {
     if (!myImager.getRangingData(&vl53Data)) //Read distance data into array
     {  
       Serial.println("Failed to pull distance data");
-      return;
+      //return;
     }
   }
 
-  // Read all of the data into vl53All
-  for (int i=0; i < 64*targetsPerZone; i++) {
+  // Read all of the data into vl53All (two display modes use all of the measurements, and they're all written to file when an image is captured)
+  for (uint16_t i=0; i < 64*targetsPerZone; i++) {
     vl53All[i] = vl53Data.distance_mm[i];
   }
   // Read the nearest measurement per zone from vl53Data into vl53Nearest
-  for (int16_t x=0; x < 8; x++) {
-    for (int16_t y=0; y < 8; y++) {
+  for (uint8_t x=0; x < 8; x++) {
+    for (uint8_t y=0; y < 8; y++) {
       vl53Nearest[x+y*8] = vl53Data.distance_mm[(((7-y)*8) + x)*targetsPerZone];  //The ST library returns the data transposed from zone mapping shown in datasheet
     }
   }
 
   // First pass: Find furthest and closest pixels
-  // TODO: Can I get rid of the special -53 versions and just set it appropriately depending on sensor mode?
   highAddr53 = lowAddr53 = 0;
   highPix53  = lowPix53  = vl53Nearest[highAddr53];
 
   if (sensorMode == 2 || sensorMode == 4) {
-    for (int x=1; x < 64*targetsPerZone; x++) { // Compare every pixel   
+    for (uint16_t x=1; x < 64*targetsPerZone; x++) { // Compare every pixel   
       if(vl53Data.distance_mm[x] > highPix53) {   // Farther pixel found?
         highPix53 = vl53Data.distance_mm[x];      // Record its values
         highAddr53 = x;
@@ -542,7 +561,7 @@ void loop()
       }
     }
   } else {
-    for (int x=1; x < 64; x++) { // Compare every pixel   
+    for (uint8_t x=1; x < 64; x++) { // Compare every pixel   
       if(vl53Nearest[x] > highPix53) {   // Farther pixel found?
         highPix53 = vl53Nearest[x];      // Record its values
         highAddr53 = x;
@@ -554,20 +573,21 @@ void loop()
     }
   }
   if(thermRange == 0) {    // Are the colors set to auto-range?
-    colorLow53 = alpha * lowPix53 + (1 - alpha) * colorLow53;     // Then high and low color values get updated
-    colorHigh53 = alpha * highPix53 + (1 - alpha) * colorHigh53;
+    colorLow53 = alpha * lowPix53 + invAlpha * colorLow53;     // Then high and low color values get updated
+    colorHigh53 = alpha * highPix53 + invAlpha * colorHigh53;
   }
   sneakFloatsVL53[0] = lowPix53;     // Retain these five distance values
   sneakFloatsVL53[1] = colorLow53;   // to append to the BMP file, if any
   sneakFloatsVL53[2] = vl53Nearest[32];  // Middle pixel?
   sneakFloatsVL53[3] = colorHigh53;
   sneakFloatsVL53[4] = highPix53;
+  */
 
   // Fetch 768 fresh temperature values from the MLX90640
   arcada.display->drawBitmap(146, 18, camIcon, 16, 12, 0xF400); // Show orange camera icon during I2C acquisition
   if(mlx.getFrame(mlx90640To) != 0) {
     Serial.println("Failed to pull thermal data");
-    return;
+    //return;
   }
   arcada.display->fillRect(146, 18, 12, 12, backColor);         // Acquisition done, erase camera icon
 
@@ -575,7 +595,7 @@ void loop()
   highAddr = lowAddr = 0;
   highPix  = lowPix  = mlx90640To[highAddr];
 
-  for (int x = 1 ; x < 768 ; x++) { // Compare every pixel
+  for (uint16_t x=1 ; x < 768 ; x++) { // Compare every pixel
     if(mlx90640To[x] > highPix) {   // Hotter pixel found?
       highPix = mlx90640To[x];      // Record its values
       highAddr = x;
@@ -586,8 +606,8 @@ void loop()
     }
   }
   if(thermRange == 0) {    // Are the colors set to auto-range?
-    colorLow = alpha * lowPix + (1 - alpha) * colorLow;     // Then high and low color values get updated
-    colorHigh = alpha * highPix + (1 - alpha) * colorHigh;
+    colorLow = alpha * lowPix + invAlpha * colorLow;     // Then high and low color values get updated
+    colorHigh = alpha * highPix + invAlpha * colorHigh;
   }
   sneakFloats[0] = lowPix;     // Retain these five temperature values
   sneakFloats[1] = colorLow;   // to append to the BMP file, if any
@@ -598,23 +618,7 @@ void loop()
   // calculate the ratio of the output size to the input size
   // The thermal camera's pixels are, nominally, drawn onto 4x4 pixels on the screen
   // But we can upsample, making each screen on the pixel either 2x2 or 1x1
-  //float ratio = (float) upsample;
-  //float mlx90640Up[768*upsample*upsample] = {0};  // For the upsampled output of the MLX90640 measurements
   uint8_t pxSize = 4.0 / upsample;
-
-  // For the depth camera
-  //float vl53Up[64*upsample*upsample] = {0};  // For the upsampled output of the VL53L5CX measurements
-  
-  // We want to overlay the depth camera data.
-  // The VL53L5CX has a 45x45 degree FoV (65 degree diagonal FoV) and 8x8 sensing zones
-  // 5.625 degrees per zone, horizontally and vertically
-  // The MLX90640 has a 55x35 degree FoV and returns 32x24 pixels (width x height)
-  // 1.71875 degrees per pixel horizontally, and 1.4583 degrees per pixel vertically
-  // This is nominally drawn onto 4x4 pixel squares (1 camera pixel = 4x4 screen pixels)
-  // 32 camera pixels = 128 screen pixels -> 1 pixel = 0.43 degrees
-  // VL53 would be 104.72 pixels wide, and each zone takes 13x13 pixels
-  // So...those numbers (4x4, 13x13, also 5.625 and 1.72) don't exactly line up nicely, but I guess
-  // we can just fill out a buffer one pixel at a time.
   
   if (sensorMode == 0 || sensorMode == 3 || sensorMode == 4) {
     // DEBUG fill the imageArea array with a test pattern
@@ -627,12 +631,18 @@ void loop()
     */
     // END DEBUG
     // loop over all the pixels in the output grid
-    for (int i = 0; i < 24*upsample; i++) {
-      for (int j = 0; j < 32*upsample; j++) {
+    // Declare some variables we'll use in the loop(s) below
+    int pxlMult = 4 / upsample;  // A multiplier used to calculate pixel coordinates
+    int pxlMult_i = 0;
+    int pxlMult_j = 0;
+    float weightedPixVal = 0;
+    int yCoordPlusXOffset = 0;
+    for (uint8_t i=0; i < 24*upsample; i++) {
+      for (uint8_t j=0; j < 32*upsample; j++) {
         // calculate the corresponding coordinates in the input grid
         // this position is based on the center of the pixel
-        float x = (float) j / (float) upsample + (1.0 / (float) upsample) / 2;
-        float y = (float) i / (float) upsample + (1.0 / (float) upsample) / 2;
+        float x = (float) j / (float) upsample + halfInverseUpsample;  // float x = (float) j / (float) upsample + (1.0 / (float) upsample) / 2;
+        float y = (float) i / (float) upsample + halfInverseUpsample;
     
         // perform bilinear interpolation and store the result
         //TODO: Make it faster! I'm not sure how, but wow it's slow right now with the 4x interpolation!
@@ -641,10 +651,16 @@ void loop()
         
         // Use that "pixel" value to populate the sub-pixels (the individual pixels of the display)
         // If upsample == 4, then there are no sub-pixels, just one pixel per value
-        int pxlMult = 4 / upsample;
-        for (int pxlIndexi=0; pxlIndexi < pxlMult; pxlIndexi++) {
-          for (int pxlIndexj=0; pxlIndexj < pxlMult; pxlIndexj++) {
-            imageArea[128 * (i * pxlMult + pxlIndexi) + j * pxlMult + pxlIndexj] = alpha * pixVal + (1 - alpha) * imageArea[128 * (i * pxlMult + pxlIndexi) + j * pxlMult + pxlIndexj];
+        
+        // Calculate some values before entering the double-loop to save a bit of time
+        pxlMult_i = i * pxlMult;
+        pxlMult_j = j * pxlMult;
+        weightedPixVal = alpha * pixVal;
+        
+        for (uint8_t pxlIndexi=0; pxlIndexi < pxlMult; pxlIndexi++) {
+          yCoordPlusXOffset = 128 * (pxlMult_i + pxlIndexi) + pxlMult_j;  // Calculate here to to save time in the loop
+          for (uint8_t pxlIndexj=0; pxlIndexj < pxlMult; pxlIndexj++) {
+            imageArea[yCoordPlusXOffset + pxlIndexj] = weightedPixVal + invAlpha * imageArea[yCoordPlusXOffset + pxlIndexj];
           }
         }
       
@@ -652,8 +668,8 @@ void loop()
     }
 
     // Store the uninterpolated data
-    for(int y = 0; y < 24; ++y) {  // Rows count from bottom up
-      for(int x = 0; x < 32; x++) {
+    for(uint8_t y=0; y < 24; ++y) {  // Rows count from bottom up
+      for(uint8_t x=0; x < 32; x++) {
         scaledPix = constrain((mlx90640To[32 * y + x] - colorLow) / (colorHigh - colorLow) * 255.9, 0.0, 255.0);
         pixelArray[3 * (32 * y + x)] = (uint8_t)scaledPix;  // Store as a byte in BMP buffer
       }
@@ -665,7 +681,44 @@ void loop()
     if (myImager.isDataReady() == true)
     {
       if (myImager.getRangingData(&vl53Data)) //Read distance data into array
-      {        
+      {
+        // Read all of the data into vl53All (two display modes use all of the measurements, and they're all written to file when an image is captured)
+        for (uint16_t i=0; i < 64*targetsPerZone; i++) {
+          vl53All[i] = vl53Data.distance_mm[i];
+        }
+        // Read the nearest measurement per zone from vl53Data into vl53Nearest
+        for (uint8_t x=0; x < 8; x++) {
+          for (uint8_t y=0; y < 8; y++) {
+            vl53Nearest[x+y*8] = vl53Data.distance_mm[(((7-y)*8) + x)*targetsPerZone];  //The ST library returns the data transposed from zone mapping shown in datasheet
+          }
+        }
+      
+        // First pass: Find furthest and closest pixels
+        highAddr53 = lowAddr53 = 0;
+        highPix53  = lowPix53  = vl53Nearest[highAddr53];
+      
+        for (uint8_t x=1; x < 64; x++) { // Compare every pixel   
+          if(vl53Nearest[x] > highPix53) {   // Farther pixel found?
+            highPix53 = vl53Nearest[x];      // Record its values
+            highAddr53 = x;
+          }
+          if(vl53Nearest[x] < lowPix53) {    // Closer pixel found?
+            lowPix53 = vl53Nearest[x];       // Likewise
+            lowAddr53 = x;
+          }
+        }
+        
+        if(thermRange == 0) {    // Are the colors set to auto-range?
+          colorLow53 = alpha * lowPix53 + invAlpha * colorLow53;     // Then high and low color values get updated
+          colorHigh53 = alpha * highPix53 + invAlpha * colorHigh53;
+        }
+        
+        sneakFloatsVL53[0] = lowPix53;     // Retain these five distance values
+        sneakFloatsVL53[1] = colorLow53;   // to append to the BMP file, if any
+        sneakFloatsVL53[2] = vl53Nearest[32];  // Middle pixel?
+        sneakFloatsVL53[3] = colorHigh53;
+        sneakFloatsVL53[4] = highPix53;
+
         if (sensorMode == 1) {
           // Take the closest return from each of the 64 zones and map the value
           // to one of the pixels in the "imageArea" array
@@ -676,14 +729,14 @@ void loop()
           // and draw in a 96x96 square. Then each zone gets mapped nicely to 12x12 pixels.
           pxSize = 1;
           uint8_t offst = 16;
-          for (int16_t x=0; x < 8*upsample; x++) {
-            for (int16_t y=0; y < 8*upsample; y++) {
-              float xf = (float) x / (float) upsample + (1.0 / (float) upsample) / 2;
-              float yf = (float) y / (float) upsample + (1.0 / (float) upsample) / 2;
+          for (uint8_t x=0; x < 8*upsample; x++) {
+            for (uint8_t y=0; y < 8*upsample; y++) {
+              float xf = (float) x / (float) upsample + halfInverseUpsample;
+              float yf = (float) y / (float) upsample + halfInverseUpsample;
               int pxlMult = 12 / upsample;
-              for (int16_t i=0; i < pxlMult; i++) {
-                for (int16_t j=0; j < pxlMult; j++) {
-                  imageArea[(offst + x * pxlMult + i) + ((y * pxlMult + j) * 128)] = alpha * interpolate(xf, yf, vl53Nearest, useSmoothstep, 8) + (1 - alpha) * imageArea[(offst + x * pxlMult + i) + ((y * pxlMult + j) * 128)];
+              for (uint8_t i=0; i < pxlMult; i++) {
+                for (uint8_t j=0; j < pxlMult; j++) {
+                  imageArea[(offst + x * pxlMult + i) + ((y * pxlMult + j) * 128)] = alpha * interpolate(xf, yf, vl53Nearest, useSmoothstep, 8) + invAlpha * imageArea[(offst + x * pxlMult + i) + ((y * pxlMult + j) * 128)];
                 }
               }
             }
@@ -699,10 +752,10 @@ void loop()
           // The VL53L5CX has a 45x45 degree FoV (65 degree diagonal FoV) and 8x8 sensing zones. 5.625 degrees per zone, horizontally and vertically.
 
           // The imageArea array is drawn as a 96x128 pixel image
-          for (int16_t i=0; i < 96; i++) {
-            for (int16_t j=0; j < 128; j++) {              
+          for (uint8_t i=0; i < 96; i++) {
+            for (uint8_t j=0; j < 128; j++) {              
               // Get the value for the output pixel by interpolating
-              imageArea2[j + i * 128] = alpha * interpolate(jToX[j], iToY[i], vl53Nearest, useSmoothstep, 8) + (1 - alpha) * imageArea2[j + i * 128];
+              imageArea2[j + i * 128] = alpha * interpolate(jToX[j], iToY[i], vl53Nearest, useSmoothstep, 8) + invAlpha * imageArea2[j + i * 128];
             }
           }
         }
@@ -719,6 +772,41 @@ void loop()
     {
       if (myImager.getRangingData(&vl53Data)) //Read distance data into array
       {        
+        // Read all of the data into vl53All (two display modes use all of the measurements, and they're all written to file when an image is captured)
+        for (uint16_t i=0; i < 64*targetsPerZone; i++) {
+          vl53All[i] = vl53Data.distance_mm[i];
+        }
+        // Read the nearest measurement per zone from vl53Data into vl53Nearest
+        for (uint8_t x=0; x < 8; x++) {
+          for (uint8_t y=0; y < 8; y++) {
+            vl53Nearest[x+y*8] = vl53Data.distance_mm[(((7-y)*8) + x)*targetsPerZone];  //The ST library returns the data transposed from zone mapping shown in datasheet
+          }
+        }
+      
+        // First pass: Find furthest and closest pixels
+        highAddr53 = lowAddr53 = 0;
+        highPix53  = lowPix53  = vl53Nearest[highAddr53];
+      
+        for (uint16_t x=1; x < 64*targetsPerZone; x++) { // Compare every pixel   
+          if(vl53Data.distance_mm[x] > highPix53) {   // Farther pixel found?
+            highPix53 = vl53Data.distance_mm[x];      // Record its values
+            highAddr53 = x;
+          }
+          if(vl53Data.distance_mm[x] < lowPix53 && vl53Data.distance_mm[x] > 0) {    // Closer pixel found?
+            lowPix53 = vl53Data.distance_mm[x];       // Likewise
+            lowAddr53 = x;
+          }
+        }
+
+        if(thermRange == 0) {    // Are the colors set to auto-range?
+          colorLow53 = alpha * lowPix53 + invAlpha * colorLow53;     // Then high and low color values get updated
+          colorHigh53 = alpha * highPix53 + invAlpha * colorHigh53;
+        }
+        sneakFloatsVL53[0] = lowPix53;     // Retain these five distance values
+        sneakFloatsVL53[1] = colorLow53;   // to append to the BMP file, if any
+        sneakFloatsVL53[2] = vl53Nearest[32];  // Middle pixel?
+        sneakFloatsVL53[3] = colorHigh53;
+        sneakFloatsVL53[4] = highPix53;
 
         // Average the distances reported for each zone, split each zone into 3x3 pixels, do bilinear interpolation, then assign each pixel the closest detected value in its zone
         // define the size of the input and output grids
@@ -733,8 +821,8 @@ void loop()
         // Populate inputData
         // There can be up to 3 returns. The value we want is the 
         // average of all of the valid returns. 
-        for (int i=0; i < INPUT_SIZE; i++) {
-          for (int j=0; j < INPUT_SIZE; j++) {
+        for (uint8_t i=0; i < INPUT_SIZE; i++) {
+          for (uint8_t j=0; j < INPUT_SIZE; j++) {
             float sum = vl53Data.distance_mm[((j*8) + i)*targetsPerZone+0];
             int count = 1;
             if (vl53Data.distance_mm[((j *8) + i)*targetsPerZone+1] > vl53Data.distance_mm[((j*8) + i)*targetsPerZone+0]) {
@@ -755,8 +843,8 @@ void loop()
         float ratio = (float) OUTPUT_SIZE / INPUT_SIZE;
         
         // loop over all the pixels in the output grid
-        for (int i = 0; i < OUTPUT_SIZE; i++) {
-          for (int j = 0; j < OUTPUT_SIZE; j++) {
+        for (uint8_t i=0; i < OUTPUT_SIZE; i++) {
+          for (uint8_t j = 0; j < OUTPUT_SIZE; j++) {
             // calculate the corresponding coordinates in the input grid
             // this position is based on the center of the pixel
             float x = (float) i / ratio + (1.0 / ratio) / 2;
@@ -769,8 +857,8 @@ void loop()
     
         // Find the closest measurement for each point and replace the interpolated value with that measured value. 
         // loop over all the pixels in the output grid
-        for (int i = 0; i < OUTPUT_SIZE; i++) {
-          for (int j = 0; j < OUTPUT_SIZE; j++) {
+        for (uint8_t i=0; i < OUTPUT_SIZE; i++) {
+          for (uint8_t j = 0; j < OUTPUT_SIZE; j++) {
             // calculate the corresponding indices in the measurement array
             float x = int((float) i / ratio);
             float y = int((float) j / ratio);
@@ -804,14 +892,14 @@ void loop()
           // Also, flip it vertically.
           pxSize = 1;
           uint8_t offst = 16;
-          for (int16_t x=0; x < 8*targetsPerZone*upsample; x++) {
-            for (int16_t y=0; y < 8*targetsPerZone*upsample; y++) {
-              float xf = (float) x / (float) upsample + (1.0 / (float) upsample) / 2;
-              float yf = (float) y / (float) upsample + (1.0 / (float) upsample) / 2;
+          for (uint8_t x=0; x < 8*targetsPerZone*upsample; x++) {
+            for (uint8_t y=0; y < 8*targetsPerZone*upsample; y++) {
+              float xf = (float) x / (float) upsample + halfInverseUpsample;
+              float yf = (float) y / (float) upsample + halfInverseUpsample;
               int pxlMult = 4 / upsample;
-              for (int16_t i=0; i < pxlMult; i++) {
-                for (int16_t j=0; j < pxlMult; j++) {
-                  imageArea[(offst + x * pxlMult + i) + (((8*targetsPerZone*upsample-y-1) * pxlMult + j) * 128)] = alpha * interpolate(xf, yf, outputData, useSmoothstep, 8*targetsPerZone) + (1 - alpha) * imageArea[(offst + x * pxlMult + i) + (((8*targetsPerZone*upsample-y-1) * pxlMult + j) * 128)];
+              for (uint8_t i=0; i < pxlMult; i++) {
+                for (uint8_t j=0; j < pxlMult; j++) {
+                  imageArea[(offst + x * pxlMult + i) + (((8*targetsPerZone*upsample-y-1) * pxlMult + j) * 128)] = alpha * interpolate(xf, yf, outputData, useSmoothstep, 8*targetsPerZone) + invAlpha * imageArea[(offst + x * pxlMult + i) + (((8*targetsPerZone*upsample-y-1) * pxlMult + j) * 128)];
                 }
               }
             }
@@ -829,10 +917,10 @@ void loop()
           // Each zone has been split into 3x3, so 1.875 degrees per chunk of pixels.
 
           // The imageArea array is drawn as a 96x128 pixel image
-          for (int16_t i=0; i < 96; i++) {
-            for (int16_t j=0; j < 128; j++) {
+          for (uint8_t i=0; i < 96; i++) {
+            for (uint8_t j=0; j < 128; j++) {
               // Get the value for the output pixel by interpolating
-              imageArea2[j + (95 - i) * 128] = alpha * interpolate(jToX2[j], iToY2[i], outputData, useSmoothstep, 8*targetsPerZone) + (1 - alpha) * imageArea2[j + (95 - i) * 128];
+              imageArea2[j + (95 - i) * 128] = alpha * interpolate(jToX2[j], iToY2[i], outputData, useSmoothstep, 8*targetsPerZone) + invAlpha * imageArea2[j + (95 - i) * 128];
             }
           }
         }
@@ -847,8 +935,8 @@ void loop()
     // Dual channel mode    
     // Draw the image from the single-pixel arrays
     if(mirrorFlag) {                 // Mirrored display (selfie mode)?
-      for(int y = 0; y < 24*4; ++y) {  // Rows count from bottom up
-        for(int x = 0; x < 32*4; x++) {
+      for(uint8_t y=0; y < 24*4; ++y) {  // Rows count from bottom up
+        for(uint8_t x=0; x < 32*4; x++) {
           scaledPix = ((uint16_t)constrain((imageArea[128 * y + x] - colorLow) / (colorHigh - colorLow) * 31.9, 0.0, 31.0)) << 11;  // Temperature
           // Invert the colors for distance - I just prefer closer = brighter (and hotter = brighter, which is default), so this has to be inverted
           scaledPix += 31.0 - (uint16_t)constrain((imageArea2[128 * y + x] - colorLow53) / (colorHigh53 - colorLow53) * 31.9, 0.0, 31.0);
@@ -858,8 +946,8 @@ void loop()
         }
       }
     } else {  // Not mirrored
-      for(int y = 0; y < 96; ++y) {
-        for(int x = 0; x < 128; x++) {
+      for(uint8_t y=0; y < 96; ++y) {
+        for(uint8_t x=0; x < 128; x++) {
   
           scaledPix = ((uint16_t)constrain((imageArea[128 * y + x] - colorLow) / (colorHigh - colorLow) * 31.9, 0.0, 31.0)) << 11;
           // Invert the colors for distance - I just prefer closer = brighter (and hotter = brighter, which is default), so this has to be inverted
@@ -875,8 +963,8 @@ void loop()
     // Single channel, use the color palette setting
     // Draw the image from the single-pixel array
     if(mirrorFlag) {                 // Mirrored display (selfie mode)?
-      for(int y = 0; y < 96; ++y) {  // Rows count from bottom up
-        for(int x = 0; x < 128; x++) {
+      for(uint8_t y=0; y < 96; ++y) {  // Rows count from bottom up
+        for(uint8_t x=0; x < 128; x++) {
         
           scaledPix = constrain((imageArea[128 * y + x] - colorLow) / (colorHigh - colorLow) * 255.9, 0.0, 255.0);
           // Invert the colors for distance - I just prefer closer = brighter (and hotter = brighter, which is default), so this has to be inverted
@@ -889,8 +977,8 @@ void loop()
         }
       }
     } else {  // Not mirrored
-      for(int y = 0; y < 96; y++) {
-        for(int x = 0; x < 128; x++) {
+      for(uint8_t y=0; y < 96; y++) {
+        for(uint8_t x=0; x < 128; x++) {
           scaledPix = constrain((imageArea[128 * y + x] - colorLow) / (colorHigh - colorLow) * 255.9, 0.0, 255.0);
           // Invert the colors for distance - I just prefer closer = brighter
           if (sensorMode == 1 || sensorMode == 2) {
@@ -1007,6 +1095,7 @@ void loop()
     } else {
       upsample++;
     }
+    halfInverseUpsample = (1.0 / (float) upsample) / 2;
   }
 
   if(!buttonActive && clickFlagEWMA) {
@@ -1017,6 +1106,7 @@ void loop()
       ewma = 0;
     }
     alpha = alphas[ewma];
+    invAlpha = 1 - alpha;  // Precalculate
   }
 
   if(!buttonActive && clickFlagFramerate) {
@@ -1226,7 +1316,7 @@ void setColorRange(int presetIndex) { // Set coldest/hottest values in color ran
 void setBackdrop(uint16_t bgColor, uint16_t buttonFunc) {
   arcada.display->fillScreen(bgColor);
 
-  for(int x = 0; x < 160; ++x)   // Paint current palette across bottom
+  for(uint8_t x=0; x < 160; ++x)   // Paint current palette across bottom
     arcada.display->drawFastVLine(x, 110, 6, colorPal[map(x, 0, 159, 0, 255)]);
 
   arcada.display->setCursor(16, 120);
@@ -1259,7 +1349,7 @@ void setBackdrop(uint16_t bgColor, uint16_t buttonFunc) {
 }
 
 void prepForSave() {
-  for(int x = 0; x < 768; ++x)
+  for(uint16_t x=0; x < 768; ++x)
     pixelArray[3 * x + 2] = pixelArray[3 * x + 1] = pixelArray[3 * x];  // Copy each blue byte into R & G for 256 grays in 24 bits
 
   if (sensorMode == 0 || sensorMode > 2) {
@@ -1317,8 +1407,8 @@ boolean writeCSV() {
   myFile = arcada.open(fullPath.c_str(), FILE_WRITE); // Only one file can be open at a time
 
   if(myFile) {                      // If the file opened okay, write to it:
-    for (int target=0; target < 64; target++) {
-      for (int zone=0; zone < targetsPerZone; zone++) {
+    for (uint8_t target=0; target < 64; target++) {
+      for (uint8_t zone=0; zone < targetsPerZone; zone++) {
         // https://stackoverflow.com/questions/41394063/how-to-simply-convert-a-float-to-a-string-in-c
         int len = snprintf(NULL, 0, "%f", vl53All[target*targetsPerZone+zone]);  // Determine the length of the value in floats
         char *result = (char*)malloc(sizeof(char) * ( len + 1 ));  // Allocate memory for a character array
@@ -1357,8 +1447,8 @@ boolean writeThermalCSV() {
   myFile = arcada.open(fullPath.c_str(), FILE_WRITE); // Only one file can be open at a time
 
   if(myFile) {                      // If the file opened okay, write to it:
-    for(int y = 0; y < 24; ++y) {  // Rows count from bottom up
-      for(int x = 0; x < 32; x++) {
+    for(uint8_t y=0; y < 24; ++y) {  // Rows count from bottom up
+      for(uint8_t x=0; x < 32; x++) {
         // https://stackoverflow.com/questions/41394063/how-to-simply-convert-a-float-to-a-string-in-c
         int len = snprintf(NULL, 0, "%f", mlx90640To[32 * y + x]);  // Determine the length of the value in floats
         char *result = (char*)malloc(sizeof(char) * ( len + 1 ));  // Allocate memory for a character array
@@ -1435,8 +1525,8 @@ void recallLastBMP(uint16_t bgColor) {  // Display 8-bit values left in buffer f
 
   setBackdrop(bgColor, 4);  // Clear screen, just a color palette & "A:EXIT" in the BG
 
-  for(int counter1 = 0; counter1 < 24; ++counter1) {  // Redraw using leftover red byte values, not yet overwritten
-    for(int counter2 = 0 ; counter2 < 32 ; ++counter2) {
+  for(uint8_t counter1=0; counter1 < 24; ++counter1) {  // Redraw using leftover red byte values, not yet overwritten
+    for(uint8_t counter2=0 ; counter2 < 32 ; ++counter2) {
       arcada.display->fillRect(16 + counter2 * 4, 92 - counter1 * 4, 4, 4,
                    colorPal[(uint16_t)pixelArray[3 * (32 * counter1 + counter2) + 2]]);
     }
@@ -1495,13 +1585,13 @@ boolean menuLoop(uint16_t bgColor) {  // Lay out a menu screen, interact to chan
 
       if(counter1 == 0) {                                      // Have we cycled around to the menu top?
         scrollPosition = 0;
-        for(int counter2 = 0; counter2 < MENU_ROWS; ++counter2) {  // Redisplay all menu texts
+        for(uint8_t counter2=0; counter2 < MENU_ROWS; ++counter2) {  // Redisplay all menu texts
           arcada.display->fillRect(0, 12 * counter2 + MENU_VPOS - 2, 160, 12, bgColor); // Erase old text
           menuLines(counter2 + scrollPosition, scrollPosition);    // Redraw each text line
         }
       } else if((counter1 + 1 < MENU_LEN) && (counter1 - scrollPosition == MENU_ROWS - 1)) { // Should we scroll down 1 menu line?
         ++scrollPosition;
-        for(int counter2 = 0; counter2 < MENU_ROWS; ++counter2) {  // Redisplay all menu texts
+        for(uint8_t counter2=0; counter2 < MENU_ROWS; ++counter2) {  // Redisplay all menu texts
           arcada.display->fillRect(0, 12 * counter2 + MENU_VPOS - 2, 160, 12, bgColor); // Erase old text
           menuLines(counter2 + scrollPosition, scrollPosition);    // Redraw each text line
         }
@@ -1623,7 +1713,7 @@ void menuLines(int lineNumber, int scrollPos) {  // Screen print a single line i
         break;
       case 3:
         arcada.display->print("   Palette - ");
-        for(int xPos = 0; xPos < 72; ++xPos)   // Display the current heat spectrum colors
+        for(uint8_t xPos=0; xPos < 72; ++xPos)   // Display the current heat spectrum colors
           arcada.display->drawFastVLine(xPos + 87, (lineNumber - scrollPos) * 12 + MENU_VPOS,
                                         8, colorPal[map(xPos, 0, 71, 0, 255)]);
         switch(paletteNum) {
