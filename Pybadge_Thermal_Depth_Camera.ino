@@ -1,48 +1,27 @@
 // Pybadge Thermal Depth Camera
-// TODO: Clean up this header
-// The VL53L5CX has a 45x45 degree FoV (65 degree diagonal FoV)
-// Regarding FoV: AN5894, Description of the fields of view of STMicroelectronics' Time-of-Flight sensors
-// The MLX90640 has a 55x35 degree FoV
+// 
+// This builds on the Adafruit Pybadge thermal camera https://learn.adafruit.com/pybadge-thermal-camera-case/overview
+// This project adds a VL53L5CX 8x8 time of flight depth sensor, as well as a number of other features
+// - 2x and 4x Bilinear interpolation
+// - Normal and smoothstep options for the bilinear interpolation
+// - Can view thermal data, depth data, or a two-channel thermal + depth image
+// - Captured thermal and depth images are stored as CSV files
+// - Two options for displaying depth data: the sensor returns up to 4 range measurements per zone (8x8 zones)
+//      - One mode shows the nearest return, the other attemps to 'intelligently' combine all of the information for a 3x upscaled image
+//      - I have only been able to get, at most, three returns per zone. Getting more than 1 requires modifying platform.h in the Sparkfun VL53LCX library files
+//      - In any case, all available measurements are saved
+// - An exponentially weighted moving average, to smooth viewed data over time
+// - A frame rate readout
 //
-// VL53LCX
-// Initially had issues with the VL53LCX because the PyBadge puts VBat on the Qwiic connector instead of 3.3V
-// The sensor returns perpendicular distance, not radial distance
+// Unfortunately, my changes have slowed things down considerably, now maxing out around 3 frames per second. Luckily I'm not too interested
+// in fast changing scenes!
+//
+// Note about connecting the VL53LCX: I initially had issues with the VL53LCX because the PyBadge puts VBat on the Qwiic connector instead of 3.3V.
+//                                    The Pybadge does have 3.3V available on a header.
 // 
 // SPDX-FileCopyrightText: 2020 Anne Barela for Adafruit Industries
 // Modified by Daniel Winker, 2023
-//
 // SPDX-License-Identifier: MIT
-
-/* Attempts to improve the framerate
- *  0: No improvements. Initial baseline.
- *  1: Precalculate the frame transforms used for the dual-sensor modes (slight improvement to the relevant modes)
- *  2: Precalculate halfInverseUpsample = (1.0 / (float) upsample) / 2;
- *  3: Precalculate alpha, change 'int's in for() loops to uint8_t or uint16_t, rearrange the 'imagearea[...] = ...;' equation at the heart of the quad-nested loops (it runs 12,288 times!)
- *  4: Change "Optimize" from "Small" to "Fastest"
- *  5: Change "Optimize" to "Here be dragons"
- *     (I changed back to "Small")
- *  6: Overclock from 120 MHz to 150 MHz
- *  7: Commented out the data processing (moving the data into the pixel array(s))
- *     A-ha! There's something else slowing it all down...
- *  8: There were 'return;'s in two cases where reading data failed; those have been removed -> no change.
- *  9: Commented out drawing the image array(s)
- *  10: What's left? Reading the sensors? Maybe I should copy the code so I don't make this file too messy...
- *  
- *  I found one website that says: use the smallest datatype possible (ex. uint8_t), another says use int8 not uint8, and another says just use 'int' and let the compiler optimize
- *  It sounds like local variables are faster than global because theyre stored on the stack rather than the heap
- *  https://forum.pjrc.com/threads/61561-Teensy-4-Global-vs-local-variables-speed-of-execution#:~:text=Usually%20there%20is%20little%20or,which%20is%20worthwhile%20for%20performance.
- * Mode    Upsample  Smoothstep   0      1     2    3     4     5     6     7     9
- * Thermal    1          0       2.63  2.5   2.63  2.63  2.25  2.25  2.62  2.62  3.94
- * Thermal    2          0       1.97  1.97  1.97  1.97  1.97  1.97  2.62  2.62  3.94
- * Thermal    4          0       1.58  1.57  1.58  1.58  1.57  1.57  1.97  2.62  3.94
- * Thermal    4          1       1.31  1.31  1.31  1.31  1.25  1.31  1.57  2.62  3.94
- * Depth      1          0       1.8   1.8   1.96  1.96  1.57  1.57  1.96  2.62  3.94
- * Depth      4          1       1.31  1.31  1.31  1.31  1.31  1.31  1.57  2.62  3.94
- * Both       1          0       1.31  1.57  1.57  1.58  1.44  1.44  1.31  1.97  3.94
- * Both       4          1       0.72  0.79  0.88  0.88  0.79  0.84  0.98  1.97  3.94
- * 
- * 
- */
 
 /*
   ThermalImager_009b - Collect thermal image values from a MLX90640 sensor array,
@@ -62,6 +41,49 @@
   Ver.  8 - Convert menu to scrolling style and add settings for emissivity and frame rate, more if feasible.
   Ver.  9 - Bring in the current Adafruit library and read a real sensor.
 */
+
+/* Attempts to improve the framerate (I'm sure there's more I could do, but I didn't find a magic bullet)
+ *  (I did find, and remove, some redundant code - that provided a small bump in speed)
+ *  0: No improvements. Initial baseline.
+ *  1: Precalculate the frame transforms used for the dual-sensor modes (slight improvement to the relevant modes)
+ *  2: Precalculate halfInverseUpsample = (1.0 / (float) upsample) / 2;
+ *  3: Precalculate alpha, change 'int's in for() loops to uint8_t or uint16_t, rearrange the 'imagearea[...] = ...;' equation at the heart of the quad-nested loops (it runs 12,288 times!)
+ *  4: Change "Optimize" from "Small" to "Fastest"
+ *  5: Change "Optimize" to "Here be dragons"
+ *     (I changed back to "Small")
+ *  6: Overclock from 120 MHz to 150 MHz
+ *  7: Commented out the data processing (moving the data into the pixel array(s))
+ *     A-ha! There's something else slowing it all down...
+ *  8: There were 'return;'s in two cases where reading data failed; those have been removed -> no change.
+ *  9: Commented out drawing the image array(s)
+ *  10: 9 is back in, so is 7, down to 120 MHz. Took out finding nearest/closest depth values
+ *  11: Took out finding high/low temperatures 
+ *  12: Commented out most of the 'setBackdrop' function
+ *  13: Commented out reading the depth sensor
+ *  14: Commented out moving depth data into arrays
+ *  15: Commented out battery icon and calculations, and camera icon
+ *  16: Commented out reading thermal data
+ *  17: Commented out all calls to interpolate()
+ *  18: Commented out the arrays where imageArea and imageArea2 are filled
+ *  19: Commented out the "Store the uninterpolated data" loop
+ *  20: ...
+ *  
+ *  I found one website that says: use the smallest datatype possible (ex. uint8_t), another says use int8 not uint8, and another says just use 'int' and let the compiler optimize
+ *  It sounds like local variables are faster than global because theyre stored on the stack rather than the heap
+ *  https://forum.pjrc.com/threads/61561-Teensy-4-Global-vs-local-variables-speed-of-execution#:~:text=Usually%20there%20is%20little%20or,which%20is%20worthwhile%20for%20performance.
+ * Mode    Upsample  Smoothstep   0      1     2    3     4     5     6     7     9     10    11    12    13    14    15    16    17    18    19
+ * Thermal    1          0       2.63  2.5   2.63  2.63  2.25  2.25  2.62  2.62  3.94  2.62  2.62  2.62  2.63  2.62  2.62  3.73  3.79  3.98  4.06
+ * Thermal    2          0       1.97  1.97  1.97  1.97  1.97  1.97  2.62  2.62  3.94        1.57        2.63              3.30  3.78  3.98  
+ * Thermal    4          0       1.58  1.57  1.58  1.58  1.57  1.57  1.97  2.62  3.94        1.31  1.31  1.97              2.29  3.76  3.97  
+ * Thermal    4          1       1.31  1.31  1.31  1.31  1.25  1.31  1.57  2.62  3.94                    1.31  1.31  1.31  1.57  3.76  3.97  4.05
+ * Depth      1          0       1.8   1.8   1.96  1.96  1.57  1.57  1.96  2.62  3.94  1.96              1.97              2.31  3.19  3.49  3.53
+ * Depth      4          1       1.31  1.31  1.31  1.31  1.31  1.31  1.57  2.62  3.94        1.31        1.57  1.57        1.64  3.19  3.49  3.53
+ * Both       1          0       1.31  1.57  1.57  1.58  1.44  1.44  1.31  1.97  3.94  1.58                                      2.08  3.10  3.11
+ * Both       4          1       0.72  0.79  0.88  0.88  0.79  0.84  0.98  1.97  3.94  0.88  0.88        0.88                    1.55  3.09  
+ * 
+ * 
+ */
+ 
 
 #include <Adafruit_MLX90640.h>
 #include "Adafruit_Arcada.h"
