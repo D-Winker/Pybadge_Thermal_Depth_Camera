@@ -1,3 +1,11 @@
+TODO: Clean out the files I'm not using  
+TODO: Take a picture of the camera  
+TODO: Take a picture of something interesting with the camera  
+TODO: Check that it looks right in the 3D viewer code, then push that code up  
+TODO: Explain the viewer code in the readme, here
+TODO: Explain the attempt to calibrate, and push that up?  
+TODO: Make a short video?  
+  
 This project builds on Adafruit's "MLX90640 Thermal Camera." See this https://learn.adafruit.com/mlx90640-thermal-image-recording/ for their guide.  
   
 This project adds a VL53L5CX 8x8 depth sensor to the original PyBadge + MLX90640 32x24 thermal camera. It also adds various features  
