@@ -15,3 +15,4 @@ This project adds a VL53L5CX 8x8 depth sensor to the original PyBadge + MLX90640
 Unfortunately, my changes have slowed things down considerably, it now maxes out around 3 frames per second.  
   
 A note about connecting the VL53LCX: I initially had issues with the VL53LCX because the PyBadge puts VBat on the Qwiic connector instead of 3.3V. The Pybadge does have 3.3V available on a header; this requires some modification of the Qwiic connector, or not using the connector.  
+In addition to Adafruit's code for the PyBadge thermal camera, this uses a breakout board and code from SparkFun for the VL53L5CX, https://learn.sparkfun.com/tutorials/qwiic-tof-imager---vl53l5cx-hookup-guide
