@@ -5,6 +5,7 @@ TODO: Check that it looks right in the 3D viewer code, then push that code up
 TODO: Explain the viewer code in the readme, here
 TODO: Explain the attempt to calibrate, and push that up?  
 TODO: Make a short video?  
+TODO: Take a picture of the back and label the controls
   
 This project builds on Adafruit's "MLX90640 Thermal Camera." See this https://learn.adafruit.com/mlx90640-thermal-image-recording/ for their guide.  
   
