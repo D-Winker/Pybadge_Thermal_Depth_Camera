@@ -1,6 +1,6 @@
 TODO: Clean out the files I'm not using  
 TODO: Take a picture of the camera  
-TODO: Take a picture of something interesting with the camera  
+~~TODO: Take a picture of something interesting with the camera~~  
 TODO: Check that it looks right in the 3D viewer code, then push that code up  
 TODO: Explain the viewer code in the readme, here
 TODO: Explain the attempt to calibrate, and push that up?  
