@@ -62,11 +62,11 @@ The user interface shows the current level of upsamling, the current frame count
 This folder contains two Python scripts, Visualize.py and Calibration.py, as well as some captured data and screenshots.  
 **Visualize.py** projects captured thermal data into 3D space using captured depth data. This projection is not particularly accurate, but it is subjectively correct. See the screenshots below.  
 <p align="center">
-  <img src="Post-Processing/Visualization-1.png" alt="Low-res 3D thermal image of me imposed on a low-res point cloud, front view" width="294"/>  
+  <img src="Post-Processing/Visualization-1.png" alt="Low-res 3D thermal image of me imposed on a low-res point cloud, front view" width="400"/>  
 </p>  
   
 <p align="center">
-  <img src="Post-Processing/Visualization-2.png" alt="Low-res 3D thermal image of me imposed on a low-res point cloud, side view" width="547"/>  
+  <img src="Post-Processing/Visualization-2.png" alt="Low-res 3D thermal image of me imposed on a low-res point cloud, side view" width="400"/>  
 </p>  
   
 **Calibration.py** was an attempt to calculate gain and offset for each pixel in the thermal and depth cameras. I do not think the improvement in the calibrated thermal images is noteworthy, and I haven't tried with depth data. I assume the errors in both sensors are noise dominated.  
