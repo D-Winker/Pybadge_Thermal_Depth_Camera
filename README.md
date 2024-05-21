@@ -1,13 +1,6 @@
-TODO: Clean out the files I'm not using  
-~~TODO: Take a picture of the camera~~  
-~~TODO: Take a picture of something interesting with the camera~~  
-TODO: Check that it looks right in the 3D viewer code, then push that code up  
-TODO: Explain the viewer code in the readme, here
-TODO: Explain the attempt to calibrate, and push that up?  
-TODO: Make a short video?  
-TODO: Take a picture of the back and label the controls
+# Pybadge Thermal+Depth Camera  
   
-This project builds on Adafruit's "MLX90640 Thermal Camera." See this https://learn.adafruit.com/mlx90640-thermal-image-recording/ for their guide.  
+This project builds on Adafruit's ["MLX90640 Thermal Camera."](https://learn.adafruit.com/mlx90640-thermal-image-recording/)  
   
 This project adds a VL53L5CX 8x8 depth sensor to the original PyBadge + MLX90640 32x24 thermal camera. It also adds various features  
 - 2x and 4x Bilinear interpolation
@@ -23,9 +16,9 @@ This project adds a VL53L5CX 8x8 depth sensor to the original PyBadge + MLX90640
   
 Unfortunately, my changes have slowed things down considerably, it now maxes out around 3 frames per second.  
   
-A note about connecting the VL53LCX: I initially had issues with the VL53LCX because the PyBadge puts VBat on the Qwiic connector instead of 3.3V. The Pybadge does have 3.3V available on a header; this requires some modification of the Qwiic connector, or not using the connector.  
-In addition to Adafruit's code for the PyBadge thermal camera, this uses a breakout board and code from SparkFun for the VL53L5CX, https://learn.sparkfun.com/tutorials/qwiic-tof-imager---vl53l5cx-hookup-guide  
-
+A note about connecting the VL53LCX: I had issues with the VL53LCX because the PyBadge puts VBat on the Qwiic connector instead of 3.3V. The Pybadge does have 3.3V available on a header; this requires some modification of the Qwiic connector, or not using the connector.  
+In addition to Adafruit's hardware and code for the PyBadge thermal camera, this uses a breakout board and code from SparkFun for the [VL53L5CX](https://learn.sparkfun.com/tutorials/qwiic-tof-imager---vl53l5cx-hookup-guide)  
+  
 ## VL53L5CX Mount  
 This folder contains an STL and source OpenSCAD file for a 3D printable part that can be used to mount the VL53L5CX in the Pybadge Camera. The mount can be glued in place above the thermal camera, and requires two screws for the depth sensor.  
 The front of the camera can be opened up with a pair of snips, hot knife tool, or rotary tool. The opening needs to be fairly wide to prevent any blockage of the sensor's field of view.  
@@ -48,20 +41,22 @@ This section of the readme describes the camera's controls and interface.
 The user interface shows the current level of upsamling, the current frame count or framerate (frames per second), the current EWMA weight, a battery indicator, a capture indicator (while capturing), and the lowest, center-of-view, and highest temperatures in the scene.  
   
 <p align="center">
-  <img src="Pictures/Camera_Back.jpg" alt="The camera, back view, with Pybadge button labels." width="600"/>  
-</p>  
+  <img src="Pictures/Camera_Back.jpg" alt="The camera, back view, with Pybadge button labels." width="400"/>    
+</p>    
   
 <p align="center">
-  <img src="Pictures/Camera_Top.jpg" alt="The camera, top view." width="600"/>  
-</p>  
+  <img src="Pictures/Camera_Top.jpg" alt="The camera, top view." width="400"/>    
+</p>    
   
-<p align="center">
-  <img src="Pictures/Camera_Back_Close.jpg" alt="The camera, back view, closeup." width="600"/>  
-</p>  
+<p align="center">  
+  <img src="Pictures/Camera_Back_Close.jpg" alt="The camera, back view, closeup." width="400"/>    
+</p>    
   
-<p align="center">
-  <img src="Pictures/Camera_Front.jpg" alt="The camera, front view." width="600"/>  
-</p>  
+<p align="center">  
+  <img src="Pictures/Camera_Front.jpg" alt="The camera, front view." width="400"/>    
+</p>    
+
+---
   
 ## Post Processing  
 This folder contains two Python scripts, Visualize.py and Calibration.py, as well as some captured data and screenshots.  
